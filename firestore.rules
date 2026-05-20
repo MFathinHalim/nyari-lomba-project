@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUser(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().size() <= 5 &&
+        data.uid is string && data.uid == userId &&
+        data.email is string &&
+        data.createdAt is timestamp &&
+        (
+          !('displayName' in data) ||
+          data.displayName is string
+        ) &&
+        (
+          !('savedCompetitions' in data) ||
+          data.savedCompetitions is list
+        );
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUser(request.resource.data, userId) &&
+                       request.resource.data.createdAt == request.time;
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUser(request.resource.data, userId) &&
+                       request.resource.data.uid == resource.data.uid &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'email', 'savedCompetitions']);
+      allow delete: if false;
+    }
+  }
+}

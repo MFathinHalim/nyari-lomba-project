@@ -1,0 +1,6 @@
+{
+  "name": "TechLomba Finder",
+  "description": "Searches and aggregates IT competitions, olympiads, and hackathons from platforms like infolomba.id and devpost.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
