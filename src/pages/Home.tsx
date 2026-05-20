@@ -107,15 +107,6 @@ export default function Home() {
     fetchCompetitions();
   };
 
-  const categories = [
-    { id: "all", label: "All Categories" },
-    { id: "Business", label: "Business" },
-    { id: "Arts", label: "Arts & Design" },
-    { id: "Science", label: "Science & Tech" },
-    { id: "E-Sports", label: "E-Sports" },
-    { id: "Writing", label: "Writing & Literature" },
-    { id: "IT", label: "IT & Hackathons" },
-  ];
 
   // Client-side filtering for upcoming toggle if backend returns both
   const displayedCompetitions = competitions.filter(comp => {
@@ -181,21 +172,6 @@ export default function Home() {
               </div>
               
               <div className="flex gap-4 shrink-0 overflow-x-auto pb-4 lg:pb-0 hide-scrollbar items-center">
-                <div className="relative shrink-0">
-                  <select
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    className="h-14 sm:h-16 appearance-none bg-white border-2 border-zinc-900 px-4 sm:px-6 pr-10 sm:pr-12 font-bold text-xs sm:text-sm uppercase focus:outline-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] cursor-pointer text-zinc-900 min-w-[120px]"
-                  >
-                    {categories.map(c => (
-                      <option key={c.id} value={c.id}>{c.label}</option>
-                    ))}
-                  </select>
-                  <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none">
-                     <svg className="w-4 h-4 text-zinc-900" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3"><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"></path></svg>
-                  </div>
-                </div>
-
                 <button
                   type="button"
                   onClick={() => setIsUpcomingOnly(!isUpcomingOnly)}
