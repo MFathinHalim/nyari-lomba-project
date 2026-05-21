@@ -158,7 +158,7 @@ async function fetchDevpostCompetitions(query: string): Promise<Competition[]> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// InfoLomba Real Scraper (Mengambil Link Asli Sesuai Web Target)
+// InfoLomba Real Scraper
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseInfoLombaCompetitions(html: string, query: string): Competition[] {
@@ -173,46 +173,34 @@ function parseInfoLombaCompetitions(html: string, query: string): Competition[] 
 
   containers.forEach((el) => {
     const container = $(el);
-
-    // 1. Ambil Judul
     const anchor = container.find(".event-title a").first();
     const title = anchor.text().trim();
     if (!title) return;
 
-    // 2. FIXED REGEX: Ambil ID Angka DAN Slug Teks dari fungsi onclick
     const onClickAttr = anchor.attr("onclick")?.trim() || "";
     let finalUrl = "";
 
-    // Regex ini menangkap dua variabel: loadDetailsEvent(ID_ANGKA, 'SLUG_TEKS')
     const match = onClickAttr.match(/loadDetailsEvent\s*\(\s*(\d+)\s*,\s*['"]([^'"]+)['"]/);
     
     if (match && match[1] && match[2]) {
-      const eventId = match[1];   // Contoh: 1788
-      const eventSlug = match[2]; // Contoh: swift-debate-2026
-      
-      // InfoLomba menggunakan format: /info-slug-id
-      finalUrl = `${baseUrl}/info-${eventSlug}-${eventId}`;
+      finalUrl = `${baseUrl}/info-${match[2]}-${match[1]}`;
     } else {
-      // Fallback jika formatnya ternyata link biasa (href)
       let href = anchor.attr("href")?.trim() || "";
       if (href && !href.startsWith("javascript:") && href !== "#") {
         finalUrl = href.startsWith("http") ? href : `${baseUrl}${href.startsWith("/") ? "" : "/"}${href}`;
       }
     }
 
-    // Jika gagal mendapatkan URL valid, skip data ini
     if (!finalUrl) return;
 
     const id = normalizeId(finalUrl, "infolomba");
 
-    // 3. Ekstrak Gambar Poster
     const imgEl = container.find(".img-container img").first();
     let imageUrl = imgEl.attr("src")?.trim() || "";
     if (imageUrl && !imageUrl.startsWith("http")) {
       imageUrl = imageUrl.startsWith("/") ? `${baseUrl}${imageUrl}` : `${baseUrl}/${imageUrl}`;
     }
 
-    // 4. Ekstrak Meta Data Kartu
     const targetText = container.find(".target").text().trim(); 
     const biayaText = container.find(".biaya").text().trim();   
     const lokasiText = container.find(".lokasi").text().trim(); 
@@ -221,14 +209,12 @@ function parseInfoLombaCompetitions(html: string, query: string): Competition[] 
 
     const description = `Penyelenggara: ${penyelenggara || "TBA"}. Target Peserta: ${targetText}. Biaya: ${biayaText}. Lokasi: ${lokasiText}.`;
 
-    // 5. Batas Waktu (Deadline)
     let deadline = "TBA";
     if (tanggalText) {
       const dateParts = tanggalText.split("-");
       deadline = dateParts.length > 1 ? dateParts[1].trim() : tanggalText;
     }
 
-    // 6. Ekstrak Tags
     const tagSet = new Set<string>();
     if (targetText) {
       targetText.split(",").forEach((t) => {
@@ -242,15 +228,13 @@ function parseInfoLombaCompetitions(html: string, query: string): Competition[] 
     }
 
     const tags = Array.from(tagSet).slice(0, 10);
-
-    // 7. Deteksi Status Kedaluwarsa
     const isPastEvent = container.hasClass("event-past");
 
     const competition = normalizeCompetition({
       id,
       title,
       shortDescription: description,
-      url: finalUrl, // Sekarang URL terisi dengan rapi, contoh: https://www.infolomba.id/info-swift-debate-2026-1788
+      url: finalUrl,
       source: "InfoLomba",
       deadline,
       category: guessCategory(`${title} ${description}`),
@@ -259,7 +243,6 @@ function parseInfoLombaCompetitions(html: string, query: string): Competition[] 
       imageUrl, 
     });
 
-    // 8. Filter Pencarian Lokal
     if (
       !lowerQuery ||
       competition.title.toLowerCase().includes(lowerQuery) ||
@@ -274,7 +257,171 @@ function parseInfoLombaCompetitions(html: string, query: string): Competition[] 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Orchestrator (Penyaring Duplikasi Berbasis Judul)
+// NEW FEATURE: LuarKampus Scraper & Parser
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseLuarKampusCompetitions(html: string, query: string): Competition[] {
+  if (!html) return [];
+
+  const $ = cheerio.load(html);
+  const competitions: Competition[] = [];
+  const lowerQuery = query.toLowerCase();
+  const baseUrl = "https://luarkampus.id";
+
+  // Ambil semua elemen anchor <a> yang mengarah ke link events di dalam list
+  $("a[href*='/events/']").each((_, el) => {
+    const card = $(el);
+    
+    // 1. Ambil Judul
+    const title = card.find("p.font-bold").text().trim();
+    if (!title) return;
+
+    // 2. Ambil URL Detail Utama & Gambar Poster
+    let href = card.attr("href")?.trim() || "";
+    const detailUrl = href.startsWith("http") ? href : `${baseUrl}${href.startsWith("/") ? "" : "/"}${href}`;
+    const id = normalizeId(detailUrl, "luarkampus");
+
+    let imageUrl = card.find("img[src*='/storage/event/']").attr("src")?.trim() || "";
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `${baseUrl}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`;
+    }
+
+    // 3. Ekstrak Meta Informasi (Penyelenggara, Tingkat, Lokasi)
+    const penyelenggara = card.find(".text-gray-700 span").eq(0).text().trim();
+    const tingkat = card.find(".text-gray-700 span").eq(1).text().trim();
+    const lokasi = card.find(".text-gray-700 div.flex.items-center span").text().trim();
+
+    const description = `Penyelenggara: ${penyelenggara || "TBA"}. Tingkat: ${tingkat || "Umum"}. Lokasi: ${lokasi || "Indonesia"}.`;
+
+    // 4. Ekstrak Target Peserta (Teks SMP, SMA, D1, dsb yang ada di bulatan kecil kiri atas)
+    const tagSet = new Set<string>();
+    card.find("span.bg-success").each((_, tagEl) => {
+      const tagText = $(tagEl).text().trim();
+      if (tagText && tagText !== "9+") tagSet.add(tagText);
+    });
+
+    if (lokasi) tagSet.add(lokasi);
+    if (tingkat.toLowerCase().includes("fully funded") || tingkat.toLowerCase().includes("gratis")) {
+      tagSet.add("Gratis");
+    }
+    const tags = Array.from(tagSet);
+
+    // 5. Ekstrak Batas Waktu (Deadline)
+    // Mencari baris teks berisikan "Deadline:"
+    const deadlineContainer = card.find("span.text-red-600");
+    let deadline = "TBA";
+    if (deadlineContainer.length > 0) {
+      deadline = deadlineContainer.find("b").text().trim() || deadlineContainer.text().replace("Deadline:", "").trim();
+    }
+
+    const competition = normalizeCompetition({
+      id,
+      title,
+      shortDescription: description,
+      url: detailUrl,
+      source: "LuarKampus",
+      deadline,
+      category: guessCategory(`${title} ${description} ${tags.join(" ")}`),
+      tags,
+      isUpcoming: true, // Berhubung diambil dari kalender aktif bulanan, status default true
+      imageUrl,
+    });
+
+    // 6. Filter Pencarian Lokal LuarKampus
+    if (
+      !lowerQuery ||
+      competition.title.toLowerCase().includes(lowerQuery) ||
+      competition.shortDescription.toLowerCase().includes(lowerQuery) ||
+      competition.tags.some((t) => t.toLowerCase().includes(lowerQuery))
+    ) {
+      competitions.push(competition);
+    }
+  });
+
+  return competitions;
+}
+function parseKompetisiCoIdCompetitions(html: string, query: string): Competition[] {
+  if (!html) return [];
+
+  const $ = cheerio.load(html);
+  const competitions: Competition[] = [];
+  const lowerQuery = query.toLowerCase();
+  const baseUrl = "https://kompetisi.co.id";
+
+  // Selector induk card utama pembungkus list
+  $(".group.bg-white.rounded-\\[clamp\\(1rem\\,2vw\\,1\\.75rem\\)\\]").each((_, el) => {
+    const card = $(el);
+
+    // 1. Ekstrak Judul Utama
+    const title = card.find("h3").text().trim();
+    if (!title) return;
+
+    // 2. Ekstrak Link Registrasi / Detail Halaman
+    const registrationAnchor = card.find("a[href*='kompetisi?id=']").first();
+    let href = registrationAnchor.attr("href")?.trim() || "";
+    if (!href) return;
+    const detailUrl = href.startsWith("http") ? href : `${baseUrl}/${href}`;
+    const id = normalizeId(detailUrl, "kompetisicoid");
+
+    // 3. FIXED REGEX POSTER: Mengambil path gambar langsung dari script onclick milik button
+    const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
+    let imageUrl = "";
+    const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
+    if (posterMatch && posterMatch[1]) {
+      const posterPath = posterMatch[1]; // Contoh: assets/poster/poster_1777989498.svg
+      imageUrl = posterPath.startsWith("http") ? posterPath : `${baseUrl}/${posterPath}`;
+    }
+
+    // 4. Ekstrak Tags (LVL, Wilayah, Sistem Pelaksanaan)
+    const tags: string[] = [];
+    card.find("span.rounded-md").each((_, tagEl) => {
+      const tagText = $(tagEl).text().trim();
+      if (tagText) tags.push(tagText);
+    });
+
+    // 5. Ekstrak Jadwal & Deadline Kegiatan
+    let deadline = "TBA";
+    card.find(".flex.justify-between.items-center").each((_, scheduleEl) => {
+      const phaseName = $(scheduleEl).find("span").eq(0).text().trim().toLowerCase();
+      const phaseDate = $(scheduleEl).find("span").eq(1).text().trim();
+      
+      // Menggunakan penanda Final atau Penyisihan sebagai penentu batas deadline pengumpulan terdekat
+      if (phaseName.includes("final") || phaseName.includes("penyisihan") || phaseName.includes("deadline")) {
+        deadline = phaseDate;
+      }
+    });
+
+    const batchText = card.find("p.tracking-\\[0\\.2em\\]").text().trim() || "";
+    const description = `Kompetisi Terkurasi oleh Kompetisi.co.id. ${batchText ? `Edisi: ${batchText}.` : ""}`;
+
+    const competition = normalizeCompetition({
+      id,
+      title,
+      shortDescription: description,
+      url: detailUrl,
+      source: "Kompetisi.co.id",
+      deadline,
+      category: guessCategory(`${title} ${tags.join(" ")}`),
+      tags,
+      isUpcoming: true,
+      imageUrl,
+    });
+
+    // 6. Filter Pencarian Lokal internal memori
+    if (
+      !lowerQuery ||
+      competition.title.toLowerCase().includes(lowerQuery) ||
+      competition.shortDescription.toLowerCase().includes(lowerQuery) ||
+      competition.tags.some((t) => t.toLowerCase().includes(lowerQuery))
+    ) {
+      competitions.push(competition);
+    }
+  });
+
+  return competitions;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// Orchestrator (Penggabung 3 Sumber Sekaligus)
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchCompetitionsFromSources(
@@ -283,14 +430,37 @@ async function fetchCompetitionsFromSources(
 ): Promise<Competition[]> {
   const normalizedQuery = query.trim();
 
+  // 1. URL Target InfoLomba (Tetap Ada)
   const infolombaUrl = normalizedQuery
     ? `https://www.infolomba.id/events?sort=Default&title=${encodeURIComponent(normalizedQuery)}+&peserta=Semua+Peserta&lokasi=Semua+Lokasi&kategori=Semua+Kategori`
     : "https://www.infolomba.id/events";
 
-  const results = await Promise.allSettled([
-    fetchDevpostCompetitions(normalizedQuery),
+  // 2. URL Target Kalender LuarKampus (Tetap Ada & pakai filter lokal)
+  const currentMonth = new Date().getMonth() + 1; 
+  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
+  const luarkampusUrls = [
+    `https://luarkampus.id/events?month=${currentMonth}`,
+    `https://luarkampus.id/events?month=${nextMonth}`
+  ];
+
+  // 3. URL Target Kompetisi.co.id (Baru Ditambahkan)
+  const kompetisiCoIdUrl = "https://kompetisi.co.id";
+
+  // 4. Proses Jalan Bareng (Paralel) untuk 3 Sumber Diatas
+  const promises: Promise<Competition[]>[] = [
+    // Jalankan InfoLomba
     fetchHtml(infolombaUrl).then((html) => parseInfoLombaCompetitions(html, normalizedQuery)),
-  ]);
+    // Jalankan Kompetisi.co.id
+    fetchHtml(kompetisiCoIdUrl).then((html) => parseKompetisiCoIdCompetitions(html, normalizedQuery))
+  ];
+
+  // Jalankan LuarKampus (Bulan ini & Bulan depan)
+  luarkampusUrls.forEach(url => {
+    promises.push(fetchHtml(url).then((html) => parseLuarKampusCompetitions(html, normalizedQuery)));
+  });
+
+  // Tunggu semua data dari 3 web selesai di-scrape
+  const results = await Promise.allSettled(promises);
 
   const competitions: Competition[] = [];
   for (const result of results) {
@@ -298,12 +468,7 @@ async function fetchCompetitionsFromSources(
       competitions.push(...result.value);
     }
   }
-
-  if (competitions.length === 0) {
-    return mockCompetitions;
-  }
-
-  // JAMINAN 100% BEBAS DOUBLE: Filter berdasarkan judul murni (Tanpa peduli variasi angka di akhir URL)
+// 5. JAMINAN BEBAS DOUBLE: Deduplikasi berbasis Title Key
   const uniqueByTitle = new Map<string, Competition>();
   
   competitions.forEach((comp) => {
@@ -313,10 +478,8 @@ async function fetchCompetitionsFromSources(
       uniqueByTitle.set(titleKey, comp);
     }
   });
-
   return Array.from(uniqueByTitle.values());
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock data (fallback)
 // ─────────────────────────────────────────────────────────────────────────────

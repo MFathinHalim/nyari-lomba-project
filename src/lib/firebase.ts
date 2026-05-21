@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, updateDoc, serverTimestamp, arrayUnion, arrayRemove, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, updateDoc, serverTimestamp, arrayUnion, onSnapshot } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -66,7 +66,7 @@ export async function ensureUserDocument(user: any) {
         email: user.email,
         displayName: user.displayName || '',
         createdAt: serverTimestamp(),
-        savedCompetitions: []
+        sharedCompetitions: [] // FEATURE UPDATE: Diubah dari savedCompetitions ke sharedCompetitions
       });
     }
   } catch (err) {
@@ -83,11 +83,15 @@ export const subscribeToUserDoc = (userId: string, callback: (data: any) => void
   });
 };
 
-export const toggleSavedCompetition = async (userId: string, competitionId: string, currentlySaved: boolean) => {
+/**
+ * FEATURE UPDATE: Melacak kompetisi yang dibagikan oleh user.
+ * Menggunakan arrayUnion untuk memasukkan ID kompetisi tanpa duplikasi.
+ */
+export const logSharedCompetition = async (userId: string, competitionId: string) => {
   const userRef = doc(db, 'users', userId);
   try {
     await updateDoc(userRef, {
-      savedCompetitions: currentlySaved ? arrayRemove(competitionId) : arrayUnion(competitionId)
+      sharedCompetitions: arrayUnion(competitionId)
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`);

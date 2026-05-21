@@ -54,7 +54,7 @@ export default function Detail() {
           </div>
           <span className="font-bold text-sm tracking-wide uppercase ml-2 hidden sm:block">Back</span>
         </Link>
-        <div className="text-3xl font-black tracking-tighter absolute left-1/2 -translate-x-1/2">LOMBA.<span className="text-blue-600">ID</span></div>
+        <div className="text-3xl font-black text-[#032583] tracking-tighter absolute left-1/2 -translate-x-1/2">NANTANGIN</div>
       </nav>
 
       <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-10 py-10 sm:py-16">
@@ -78,9 +78,22 @@ export default function Detail() {
             </button>
           </div>
 
-          <p className="text-lg sm:text-xl font-medium text-zinc-600 border-l-4 border-blue-600 pl-4 py-1 my-4">
+          <p className="text-lg sm:text-xl font-medium text-zinc-600 border-l-4 border-[#ff0404] pl-4 py-1 my-4">
             {competition.shortDescription}
           </p>
+        {competition.imageUrl && (
+          <div className="w-full mb-4 border-2 aspect-3/4 border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow">
+            <img 
+              src={competition.imageUrl} 
+              alt={competition.title}
+              loading="lazy"
+              className="w-full h-full object-cover transition-all duration-300 scale-100 group-hover:scale-105"
+              onError={(e) => {
+                (e.target as HTMLElement).style.display = 'none';
+              }}
+            />
+          </div>
+        )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 py-6 border-y-2 border-zinc-100">
             <div className="flex items-center gap-3">
@@ -115,13 +128,13 @@ export default function Detail() {
 
           <div className="pt-6">
             <p className="text-xs font-black text-zinc-400 uppercase mb-4">Provider / Source</p>
-            <p className="text-2xl font-black text-zinc-300 uppercase underline decoration-4 underline-offset-4 mb-10">{competition.source}</p>
+            <p className="text-2xl font-black text-[#ff9006] uppercase underline decoration-4 underline-offset-4 mb-10">{competition.source}</p>
 
             <a 
               href={competition.url} 
               target="_blank" 
               rel="noopener noreferrer"
-              className="flex items-center justify-center w-full sm:w-max px-10 py-5 bg-blue-600 hover:bg-blue-700 border-2 border-zinc-900 text-white font-black uppercase text-base sm:text-lg transition shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] focus:outline-none gap-3"
+              className="flex items-center justify-center w-full sm:w-max px-10 py-5 bg-[#21a701] border-2 border-zinc-900 text-white font-black uppercase text-base sm:text-lg transition shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] focus:outline-none gap-3"
             >
               Open Registration <ExternalLink className="w-5 h-5" />
             </a>
