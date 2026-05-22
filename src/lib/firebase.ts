@@ -1,10 +1,13 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, updateDoc, serverTimestamp, arrayUnion, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, updateDoc, serverTimestamp, arrayUnion, arrayRemove, onSnapshot } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// PERBAIKAN: Menggunakan getFirestore standar tanpa id kustom agar mengarah ke database (default)
+export const db = getFirestore(app);
 export const auth = getAuth(app);
 
 enum OperationType {
@@ -49,7 +52,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     },
     operationType,
     path
-  }
+  };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
@@ -63,10 +66,12 @@ export async function ensureUserDocument(user: any) {
     if (!userSnap.exists()) {
       await setDoc(userRef, {
         uid: user.uid,
+        userId: user.uid, 
         email: user.email,
         displayName: user.displayName || '',
         createdAt: serverTimestamp(),
-        sharedCompetitions: [] // FEATURE UPDATE: Diubah dari savedCompetitions ke sharedCompetitions
+        updatedAt: serverTimestamp(),
+        sharedCompetitions: [] // Menyiapkan array kosong untuk menampung bookmark lomba
       });
     }
   } catch (err) {
@@ -84,8 +89,27 @@ export const subscribeToUserDoc = (userId: string, callback: (data: any) => void
 };
 
 /**
- * FEATURE UPDATE: Melacak kompetisi yang dibagikan oleh user.
- * Menggunakan arrayUnion untuk memasukkan ID kompetisi tanpa duplikasi.
+ * FEATURE SIMPEL: Menyimpan atau menghapus objek data kompetisi utuh hasil scraping ke Firestore.
+ * Menggunakan arrayUnion untuk menambah objek dan arrayRemove untuk menghapus objek.
+ */
+export const toggleSaveCompetition = async (userId: string, competitionData: any, isCurrentlySaved: boolean) => {
+  const userRef = doc(db, 'users', userId);
+  try {
+    // Gunakan setDoc + merge: true sebagai pengganti updateDoc
+    await setDoc(userRef, {
+      sharedCompetitions: isCurrentlySaved 
+        ? arrayRemove(competitionData) 
+        : arrayUnion(competitionData),
+      updatedAt: serverTimestamp() // Sekalian update timestamp-nya
+    }, { merge: true }); // <--- Ini kuncinya agar tidak eror "No document to update"
+    
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`);
+  }
+};
+
+/**
+ * Melacak kompetisi yang dibagikan oleh user (jika dibutuhkan)
  */
 export const logSharedCompetition = async (userId: string, competitionId: string) => {
   const userRef = doc(db, 'users', userId);
