@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react"; 
 import { Link } from "react-router-dom";
-import { Loader2, Info, Volume2, VolumeX, User, ChevronLeft, ChevronRight, Trophy, Flame, Sparkles } from "lucide-react";
+import { Loader2, Info, Volume2, VolumeX, User, ChevronLeft, ChevronRight, Trophy, Flame, Sparkles, CheckCircle } from "lucide-react";
 import { CompetitionCard } from "../components/CompetitionCard";
 import { Competition } from "../types";
 import { auth, logInWithGoogle, logOut, subscribeToUserDoc, toggleSaveCompetition } from "../lib/firebase"; 
@@ -9,7 +9,8 @@ import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 export default function Home() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
-  const [puspresnasLoading, setPuspresnasLoading] = useState(false); // State khusus background pusher
+  const [puspresnasLoading, setPuspresnasLoading] = useState(false); 
+  const [puspresnasNotice, setPuspresnasNotice] = useState(""); // State baru untuk notifikasi dinamik
   const [error, setError] = useState("");
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -125,50 +126,64 @@ export default function Home() {
     return isNaN(fallback) ? Infinity : fallback;
   };
 
-  // LOGIKA UTAMA: Ambil data cepat, panggil data lambat di background, lalu gabung otomatis!
-  async function fetchAllDataStream() {
-    setLoading(true);
-    setError("");
-    
-    const fastUrl = new URL("/api/competitions", window.location.href);
-    const puspresnasUrl = new URL("/api/competitions/puspresnas", window.location.href);
-    
-    if (searchQuery.trim()) {
-      fastUrl.searchParams.append("q", searchQuery);
-      puspresnasUrl.searchParams.append("q", searchQuery);
-    }
-    if (category !== "all") {
-      fastUrl.searchParams.append("category", category);
-      puspresnasUrl.searchParams.append("category", category);
-    }
-
-    // Step 1: Panggil & Tampilkan Data Cepat Terlebih Dahulu
-    try {
-      const res = await fetch(fastUrl);
-      if (!res.ok) throw new Error("Gagal memuat kompetisi standar.");
-      const fastData = await res.json();
-      setCompetitions(fastData); 
-    } catch (err: any) {
-      setError(err.message || "Terjadi kesalahan.");
-    } finally {
-      setLoading(false);
-    }
-
-    // Step 2: Jalankan Stream Puspresnas di Background Secara Asinkronus
-    setPuspresnasLoading(true);
-    try {
-      const pRes = await fetch(puspresnasUrl);
-      if (pRes.ok) {
-        const puspresnasData = await pRes.json();
-        // Sisipkan data Puspresnas di posisi paling atas array utama
-        setCompetitions(prev => [...puspresnasData, ...prev]);
-      }
-    } catch (pErr) {
-      console.error("Gagal memuat data latar belakang Puspresnas:", pErr);
-    } finally {
-      setPuspresnasLoading(false);
-    }
+  // LOGIKA AMBIL DATA: Cepat dulu keluar, lambat ngebuntut di ekor daftar lomba
+  // LOGIKA AMBIL DATA: Mengalir lancar tanpa mematikan state loading prematur
+async function fetchAllDataStream() {
+  setLoading(true);
+  setError("");
+  setPuspresnasNotice("");
+  
+  const fastUrl = new URL("/api/competitions", window.location.href);
+  const puspresnasUrl = new URL("/api/competitions/puspresnas", window.location.href);
+  
+  if (searchQuery.trim()) {
+    fastUrl.searchParams.append("q", searchQuery);
+    puspresnasUrl.searchParams.append("q", searchQuery);
   }
+  if (category !== "all") {
+    fastUrl.searchParams.append("category", category);
+    puspresnasUrl.searchParams.append("category", category);
+  }
+
+  // Step 1: Ambil data 4 web utama secara instan
+  try {
+    const res = await fetch(fastUrl);
+    if (!res.ok) throw new Error("Gagal memuat kompetisi standar.");
+    const fastData = await res.json();
+    setCompetitions(fastData); 
+  } catch (err: any) {
+    setError(err.message || "Terjadi kesalahan.");
+  }
+  // JANGAN matikan setLoading(false) di sini agar engine React tidak bingung dengan siklus render data background
+
+  // Step 2: Ambil data lambat Puspresnas di background, nyalakan banner-nya!
+  setPuspresnasLoading(true);
+  setPuspresnasNotice("Menyelaraskan dengan pangkalan data Puspresnas... Mohon tunggu.");
+  
+  try {
+    const pRes = await fetch(puspresnasUrl);
+    if (pRes.ok) {
+      const puspresnasData = await pRes.json();
+      if (puspresnasData.length > 0) {
+        // Menggabungkan data Puspresnas di baris AKHIR (tail) array
+        setCompetitions(prev => [...prev, ...puspresnasData]);
+        setPuspresnasNotice(`Berhasil menyisipkan ${puspresnasData.length} ajang resmi Puspresnas!`);
+      } else {
+        setPuspresnasNotice("");
+      }
+    }
+  } catch (pErr) {
+    console.error("Gagal memuat data latar belakang Puspresnas:", pErr);
+    setPuspresnasNotice("Koneksi Puspresnas terputus.");
+  } finally {
+    // Matikan seluruh status loading secara bersamaan di akhir siklus stream data
+    setPuspresnasLoading(false);
+    setLoading(false); 
+    
+    // Bersihkan notifikasi sukses setelah banner selesai dibaca dalam 4 detik
+    setTimeout(() => setPuspresnasNotice(""), 4000);
+  }
+}
 
   useEffect(() => {
     fetchAllDataStream();
@@ -312,14 +327,15 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Asynchronous Background Loader Indicator */}
-            {puspresnasLoading && (
-              <div className="w-full bg-[#7c3aed] text-white border-2 border-zinc-900 p-3 mb-6 flex items-center justify-between gap-3 font-black text-xs uppercase tracking-wider shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] animate-pulse">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin text-[#00e5ff]" />
-                  <span>Sistem sedang merayap ke Puspresnas Kemendikdasmen RI di background...</span>
-                </div>
-                <span className="bg-black/30 px-2 py-0.5 text-[10px]">TUNGGU BENTAR</span>
+            {/* INTERACTIVE NOTIFICATION FLOATING BANNER (Neo-brutalist Style) */}
+            {puspresnasNotice && (
+              <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-[#7c3aed] text-white border-2 border-zinc-900 px-5 py-4 font-black text-xs uppercase tracking-wider shadow-[5px_5px_0px_0px_#000] rounded-none animate-bounce max-w-sm sm:max-w-md">
+                {puspresnasLoading ? (
+                  <Loader2 className="w-5 h-5 animate-spin text-[#00e5ff] shrink-0" />
+                ) : (
+                  <CheckCircle className="w-5 h-5 text-[#a3e635] shrink-0" />
+                )}
+                <p className="leading-tight">{puspresnasNotice}</p>
               </div>
             )}
 
