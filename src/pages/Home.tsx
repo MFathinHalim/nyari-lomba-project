@@ -9,11 +9,10 @@ import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 export default function Home() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
+  const [puspresnasLoading, setPuspresnasLoading] = useState(false); // State khusus background pusher
   const [error, setError] = useState("");
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  
-  // --- STATE DATA SAVED TETAP DIPERTAHANKAN UNTUK MENENTUKAN STATUS AKTIF BINTANG/BOOKMARK ---
   const [savedCompetitions, setSavedCompetitions] = useState<Competition[]>([]);
 
   // Filters
@@ -38,13 +37,12 @@ export default function Home() {
     return () => unsubscribeAuth();
   }, []);
 
-  // Real-time listen data user untuk tahu kompetisi apa saja yang sudah di-save
+  // Listen data bookmark user
   useEffect(() => {
     if (!user) {
       setSavedCompetitions([]);
       return;
     }
-
     const unsubscribe = subscribeToUserDoc(user.uid, (userData) => {
       if (userData && userData.sharedCompetitions) {
         setSavedCompetitions(userData.sharedCompetitions);
@@ -52,7 +50,6 @@ export default function Home() {
         setSavedCompetitions([]);
       }
     });
-
     return () => unsubscribe();
   }, [user]);
 
@@ -60,15 +57,12 @@ export default function Home() {
     return savedCompetitions.map(comp => comp.id);
   }, [savedCompetitions]);
 
-  // Handler untuk menyimpan/menghapus bookmark lomba via card
   const handleSaveToggle = async (competition: Competition) => {
     if (!user) {
       alert("Login dulu bro, biar bisa nge-save tantangan! 😎");
       return;
     }
-
     const isSaved = savedIds.includes(competition.id);
-
     try {
       await toggleSaveCompetition(user.uid, competition, isSaved);
     } catch (err) {
@@ -131,44 +125,68 @@ export default function Home() {
     return isNaN(fallback) ? Infinity : fallback;
   };
 
-  async function fetchCompetitions() {
+  // LOGIKA UTAMA: Ambil data cepat, panggil data lambat di background, lalu gabung otomatis!
+  async function fetchAllDataStream() {
     setLoading(true);
     setError("");
-    setCurrentPage(1); 
-    try {
-      const url = new URL("/api/competitions", window.location.href);
-      if (searchQuery.trim()) url.searchParams.append("q", searchQuery);
-      if (category !== "all") url.searchParams.append("category", category);
+    
+    const fastUrl = new URL("/api/competitions", window.location.href);
+    const puspresnasUrl = new URL("/api/competitions/puspresnas", window.location.href);
+    
+    if (searchQuery.trim()) {
+      fastUrl.searchParams.append("q", searchQuery);
+      puspresnasUrl.searchParams.append("q", searchQuery);
+    }
+    if (category !== "all") {
+      fastUrl.searchParams.append("category", category);
+      puspresnasUrl.searchParams.append("category", category);
+    }
 
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Failed to search competitions");
-      const data = await res.json();
-      setCompetitions(data);
+    // Step 1: Panggil & Tampilkan Data Cepat Terlebih Dahulu
+    try {
+      const res = await fetch(fastUrl);
+      if (!res.ok) throw new Error("Gagal memuat kompetisi standar.");
+      const fastData = await res.json();
+      setCompetitions(fastData); 
     } catch (err: any) {
-      setError(err.message || "An error occurred.");
+      setError(err.message || "Terjadi kesalahan.");
     } finally {
       setLoading(false);
+    }
+
+    // Step 2: Jalankan Stream Puspresnas di Background Secara Asinkronus
+    setPuspresnasLoading(true);
+    try {
+      const pRes = await fetch(puspresnasUrl);
+      if (pRes.ok) {
+        const puspresnasData = await pRes.json();
+        // Sisipkan data Puspresnas di posisi paling atas array utama
+        setCompetitions(prev => [...puspresnasData, ...prev]);
+      }
+    } catch (pErr) {
+      console.error("Gagal memuat data latar belakang Puspresnas:", pErr);
+    } finally {
+      setPuspresnasLoading(false);
     }
   }
 
   useEffect(() => {
-    fetchCompetitions();
+    fetchAllDataStream();
   }, []);
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    fetchCompetitions();
+    setCurrentPage(1); 
+    fetchAllDataStream();
   };
 
   useEffect(() => {
     setCurrentPage(1);
   }, [isUpcomingOnly, isUrgentFirst]);
 
-  // --- FILTER DISPLAYED ---
   const displayedCompetitions = useMemo(() => {
     let result = competitions.filter(comp => {
       if (isUpcomingOnly && !comp.isUpcoming) return false;
-      if (searchQuery && !comp.title.toLowerCase().includes(searchQuery.toLowerCase()) && !comp.shortDescription.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     });
 
@@ -185,7 +203,7 @@ export default function Home() {
       });
     }
     return result;
-  }, [competitions, isUpcomingOnly, searchQuery, isUrgentFirst]);
+  }, [competitions, isUpcomingOnly, isUrgentFirst]);
 
   const { paginatedCompetitions, totalPages } = useMemo(() => {
     const total = Math.ceil(displayedCompetitions.length / itemsPerPage);
@@ -198,11 +216,10 @@ export default function Home() {
 
   return (
     <>
-      {/* Background GPU Accelerated */}
       <div className="fixed inset-0 bg-[url('https://c4.wallpaperflare.com/wallpaper/441/80/973/business-compete-competition-competitive-wallpaper-preview.jpg')] bg-no-repeat bg-cover bg-center z-0 pointer-events-none transform-gpu" />
       <div className="fixed inset-0 bg-white/85 z-0 pointer-events-none" />
 
-      {/* Running Text / Marquee Paling Atas */}
+      {/* Marquee */}
       <div className="relative z-20 w-full bg-zinc-900 text-white h-8 border-b-2 border-zinc-900 overflow-hidden flex items-center text-xs font-black select-none uppercase tracking-widest">
         <div className="flex w-max relative">
           <div className="animate-marquee whitespace-nowrap flex gap-8 items-center pr-8">
@@ -215,7 +232,6 @@ export default function Home() {
             <span>KATA WAGURI DIA SUKA COWOK AMBIS</span>
             <span>•</span>
           </div>
-
           <div className="animate-marquee2 absolute top-0 left-full whitespace-nowrap flex gap-8 items-center pr-8">
             <span>REBUT HADIAH TOTAL RATUSAN JUTA RUPIAH</span>
             <span>•</span>
@@ -230,7 +246,7 @@ export default function Home() {
       </div>
       
       <div className="relative min-h-screen font-sans text-zinc-900 flex flex-col z-10">
-        {/* Header */}
+        {/* Navbar */}
         <nav className="h-20 border-b-2 border-zinc-900 flex items-center justify-between px-6 sm:px-10 bg-white sticky top-0 z-20 w-full">
           <div className="text-3xl font-black text-[#032583] tracking-tighter hover:scale-105 transition-transform cursor-pointer">
             NANTANGIN<span className="text-red-500">.</span>
@@ -245,7 +261,7 @@ export default function Home() {
                 <div className="flex items-center gap-4">
                   <div className="hidden sm:flex flex-col items-end">
                     <span className="text-xs font-black">{user.displayName || "User"}</span>
-                    <button onClick={handleLogout} className="text-[10px] text-zinc-500 hover:text-zinc-900 unsubscribe-style underline uppercase cursor-pointer">Log Out</button>
+                    <button onClick={handleLogout} className="text-[10px] text-zinc-500 hover:text-zinc-900 underline uppercase cursor-pointer">Log Out</button>
                   </div>
                   <Link to="/profile" className="w-10 h-10 border-2 border-zinc-900 bg-[#ff3b30] text-white flex items-center justify-center shrink-0 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all overflow-hidden">
                     {user.photoURL ? (
@@ -265,9 +281,8 @@ export default function Home() {
         </nav>
 
         <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-10 py-10 sm:py-16 flex flex-col justify-between">
-          
           <div>
-            {/* Hero Section Grid */}
+            {/* Hero */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12 items-start">
               <div className="lg:col-span-2 flex flex-col justify-center">
                 <h1 className="text-5xl sm:text-7xl font-black leading-none tracking-tighter">
@@ -275,38 +290,40 @@ export default function Home() {
                 </h1>
               </div>
 
-              {/* Brutalist Fun Stats Hero Widget */}
               <div className="grid grid-cols-2 gap-4 lg:col-span-1 w-full">
                 <div className="border-2 border-zinc-900 bg-[#a3e635] p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col justify-between h-28 rotate-[1deg]">
                   <Trophy className="w-6 h-6 stroke-[2.5]" />
                   <div>
-                    <div className="text-2xl font-black">{competitions.length || "120+"}</div>
-                    <div className="text-[10px] font-black uppercase tracking-wider text-zinc-700">Tantangan Aktif</div>
+                    <div className="text-2xl font-black">{competitions.length}</div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-zinc-700">Total Tantangan</div>
                   </div>
                 </div>
                 <div className="border-2 border-zinc-900 bg-[#ff007f] text-white p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col justify-between h-28 rotate-[-2deg]">
                   <Flame className="w-6 h-6 stroke-[2.5]" />
                   <div>
-                    <div className="text-2xl font-black">SEMANGAT</div>
-                    <div className="text-[10px] font-black uppercase tracking-wider text-pink-200">Kita Coba Dulu</div>
+                    <div className="text-2xl font-black">GASSIN</div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-pink-200">Coba Aja Dulu</div>
                   </div>
                 </div>
                 <div className="col-span-2 border-2 border-zinc-900 bg-[#00e5ff] p-3 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex items-center gap-3">
                   <Sparkles className="w-6 h-6 shrink-0 animate-spin [animation-duration:6s]" />
-                  <span className="text-xs font-black uppercase tracking-tight">Ingin Banyak Sertif Namun Enggan Ikut Lomba?</span>
+                  <span className="text-xs font-black uppercase tracking-tight">Tersedia data dari Puspresnas juga!</span>
                 </div>
               </div>
             </div>
 
-            {/* Banner Notice */}
-            <div className="w-full bg-[#ffcc00] border-2 border-zinc-900 p-4 mb-8 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div className="flex items-center gap-3">
-                <div className="bg-black text-white px-2 py-1 text-xs font-black uppercase tracking-wider rotate-[-2deg]">PENGUMUMAN</div>
-                <p className="text-xs font-black uppercase tracking-tight">Gunakan fitur <span className="underline decoration-red-600 decoration-2">Urgent First</span> untuk menyaring lomba!</p>
+            {/* Asynchronous Background Loader Indicator */}
+            {puspresnasLoading && (
+              <div className="w-full bg-[#7c3aed] text-white border-2 border-zinc-900 p-3 mb-6 flex items-center justify-between gap-3 font-black text-xs uppercase tracking-wider shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] animate-pulse">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#00e5ff]" />
+                  <span>Sistem sedang merayap ke Puspresnas Kemendikdasmen RI di background...</span>
+                </div>
+                <span className="bg-black/30 px-2 py-0.5 text-[10px]">TUNGGU BENTAR</span>
               </div>
-            </div>
+            )}
 
-            {/* Form Pencarian & Filter */}
+            {/* Form Pencarian */}
             <form onSubmit={handleSearch} className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center mt-6 mb-10">
               <div className="relative flex-1">
                 <input
@@ -338,14 +355,21 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="h-14 sm:h-16 cursor-pointer shrink-0 bg-[#ffce00] border-2 border-zinc-900 text-black px-6 sm:px-8 font-black uppercase text-xs sm:text-sm transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ffe055] active:translate-x-1 active:translate-y-1 active:shadow-none min-w-[120px]"
+                  className="h-14 sm:h-16 cursor-pointer shrink-0 bg-[#ffce00] border-2 border-zinc-900 text-black px-6 sm:px-8 font-black uppercase text-xs sm:text-sm transition-all hover:bg-[#ffe055] min-w-[120px]"
                 >
                   {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "CARI!"}
                 </button>
               </div>
             </form>
 
-            {/* Handling Feedback/State */}
+            {/* Loading State Utama */}
+            {loading && (
+              <div className="w-full bg-zinc-900 text-white border-2 border-zinc-900 p-4 mb-10 flex items-center justify-center gap-3 font-black text-sm uppercase tracking-widest shadow-[4px_4px_0px_0px_#ffce00]">
+                <Loader2 className="w-5 h-5 animate-spin text-[#ffce00]" /> 
+                Menyisir Event Kompetisi...
+              </div>
+            )}
+
             {error && (
               <div className="bg-red-200 text-zinc-900 border-2 border-zinc-900 p-6 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] flex items-start mb-10 font-bold">
                 <Info className="w-6 h-6 mr-3 shrink-0 mt-0.5 text-red-700" />
@@ -359,11 +383,11 @@ export default function Home() {
             {!loading && displayedCompetitions.length === 0 && !error && (
               <div className="bg-white border-2 border-zinc-900 p-12 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] flex flex-col items-center justify-center text-center mb-10">
                 <p className="font-black text-zinc-900 text-2xl uppercase tracking-tighter">Lomba Gak Ketemu, Masbro!</p>
-                <p className="text-sm text-zinc-500 mt-1">Coba cari kata kunci lain atau matikan filter.</p>
+                <p className="text-sm text-zinc-500 mt-1">Coba cari kata kunci lain.</p>
               </div>
             )}
 
-            {/* Cards Section */}
+            {/* Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8 pb-10">
               {paginatedCompetitions.map((comp, index) => (
                 <div key={`${comp.id}-${index}`} className="w-full flex items-stretch">
@@ -378,7 +402,7 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Pagination Navigation */}
+          {/* Pagination */}
           {!loading && totalPages > 1 && (
             <div className="flex justify-center items-center gap-3 mt-8 pb-6">
               <button
@@ -388,7 +412,7 @@ export default function Home() {
                   setCurrentPage(prev => Math.max(prev - 1, 1));
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
-                className="w-12 h-12 border-2 cursor-pointer border-zinc-900 bg-white flex items-center justify-center text-zinc-900 transition shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none active:translate-x-0.5 active:translate-y-0.5"
+                className="w-12 h-12 border-2 cursor-pointer border-zinc-900 bg-white flex items-center justify-center text-zinc-900 transition shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-zinc-100 disabled:opacity-40 disabled:shadow-none"
               >
                 <ChevronLeft className="w-5 h-5 stroke-[3]" />
               </button>
@@ -404,7 +428,7 @@ export default function Home() {
                   setCurrentPage(prev => Math.min(prev + 1, totalPages));
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
-                className="w-12 h-12 border-2 cursor-pointer border-zinc-900 bg-white flex items-center justify-center text-zinc-900 transition shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none active:translate-x-0.5 active:translate-y-0.5"
+                className="w-12 h-12 border-2 cursor-pointer border-zinc-900 bg-white flex items-center justify-center text-zinc-900 transition shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-zinc-100 disabled:opacity-40 disabled:shadow-none"
               >
                 <ChevronRight className="w-5 h-5 stroke-[3]" />
               </button>
@@ -422,14 +446,8 @@ export default function Home() {
             0% { transform: translateX(0%); }
             100% { transform: translateX(-100%); }
           }
-
-          .animate-marquee {
-            animation: marquee 25s linear infinite;
-          }
-
-          .animate-marquee2 {
-            animation: marquee 25s linear infinite;
-          }
+          .animate-marquee { animation: marquee 25s linear infinite; }
+          .animate-marquee2 { animation: marquee 25s linear infinite; }
         `}</style>
       </div>
     </>

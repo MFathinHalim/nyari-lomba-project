@@ -48,7 +48,7 @@ export function CompetitionCard({ competition, onShare, isSaved = false, onSave 
     >
       {/* Badge Urgensi Deadline */}
       {daysLeft !== null && daysLeft <= 3 && daysLeft > 0 && (
-        <div className="absolute -top-3 -right-2 bg-red-500 text-white border-2 border-black text-[10px] font-black px-2 py-1 uppercase tracking-wider rotate-3 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] z-20">
+        <div className="absolute -top-3 -right-2 bg-red-500 text-white border-2 border-black text-[10px] font-black px-2 py-1 uppercase tracking-wider rotate-3 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] z-10">
           DEADLINE H-{daysLeft} !
         </div>
       )}
@@ -61,7 +61,7 @@ export function CompetitionCard({ competition, onShare, isSaved = false, onSave 
             e.stopPropagation(); // Mencegah navigasi ke halaman detail saat klik save
             onSave();
           }}
-          className={`absolute top-14 right-4 w-10 h-10 border-2 border-zinc-900 flex items-center justify-center transition-all cursor-pointer z-20 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] group-hover:border-white group-hover:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.2)] ${
+          className={`absolute top-14 right-4 w-10 h-10 border-2 border-zinc-900 flex items-center justify-center transition-all cursor-pointer z-10 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] group-hover:border-white group-hover:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.2)] ${
             isSaved 
               ? 'bg-amber-300 text-black' 
               : 'bg-white text-zinc-400 hover:text-zinc-900 group-hover:bg-zinc-800 group-hover:text-zinc-300'
@@ -79,14 +79,14 @@ export function CompetitionCard({ competition, onShare, isSaved = false, onSave 
           ) : (
             <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-black uppercase border border-green-200">Open Now</span>
           )}
-          <span className="text-[10px] font-bold text-zinc-400 group-hover:text-zinc-500 uppercase pr-10">
+          <span className="text-[10px] font-bold text-zinc-400 group-hover:text-zinc-500 uppercase">
             sc: {competition.source}
           </span>
         </div>
 
         {/* Poster Lomba */}
         {competition.imageUrl && (
-          <div className="w-full mb-4 border-2 aspect-[3/4] border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow group-hover:border-white">
+          <div className={`mb-4 border-2 ${competition.source.includes("Puspresnas") ? "rounded-full max-h-80 max-w-80" : "aspect-[3/4] w-full"} border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow group-hover:border-white`}>
             <img 
               src={competition.imageUrl} 
               alt={competition.title}
