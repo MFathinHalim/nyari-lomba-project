@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import * as puppeteer from '@cloudflare/puppeteer'
+import * as cheerio from 'cheerio'
+import axios from 'axios'
 
-// 1. Definisikan tipe Environment Binding sesuai wrangler.toml
 type Env = {
   Bindings: {
     MY_BROWSER: puppeteer.BrowserWorker
@@ -11,50 +12,32 @@ type Env = {
 
 const app = new Hono<Env>()
 
-// 2. Aktifkan Middleware CORS agar bisa diakses oleh Frontend Vite
 app.use('/api/*', cors({
-  origin: '*', // Sesuaikan dengan domain frontend kamu jika sudah produksi
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
-  exposeHeaders: ['Content-Length'],
-  maxAge: 600,
-  credentials: true,
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type'],
 }))
 
-// 3. Endpoint Utama untuk Scraping Puspresnas
+// ========================================================
+// 1. ENDPOINT PUSPRESNAS (Pake Browser Rendering Cloudflare)
+// ========================================================
 app.get('/api/competitions/puspresnas', async (c) => {
   let browser: puppeteer.Browser | null = null
-
   try {
-    // Memastikan binding MY_BROWSER terdeteksi oleh Cloudflare
     if (!c.env.MY_BROWSER) {
-      return c.json({ 
-        success: false, 
-        message: "Browser Rendering binding (MY_BROWSER) tidak ditemukan. Pastikan wrangler.toml sudah benar dan aktif di dashboard." 
-      }, 500)
+      return c.json({ success: false, message: "Binding MY_BROWSER tidak aktif." }, 500)
     }
 
-    // Launch headless browser dari serverless infrastructure Cloudflare
     browser = await puppeteer.launch(c.env.MY_BROWSER)
     const page = await browser.newPage()
-
-    // Atur viewport dan User Agent agar tidak dicurigai sebagai bot kasar
     await page.setViewport({ width: 1280, height: 800 })
     
-    // Buka website target Puspresnas
     const targetUrl = 'https://pusatprestasinasional.kemdikbud.go.id/'
-    await page.goto(targetUrl, { 
-      waitUntil: 'networkidle2', // Tunggu sampai traffic jaringan mereda
-      timeout: 30000 
-    })
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 })
 
-    // Jalankan logika evaluasi DOM di dalam halaman browser untuk mengambil data
-    const kometisiData = await page.evaluate(() => {
-      // Jalankan query selector sesuai dengan struktur HTML website Puspresnas aktual
-      // Ini adalah contoh ekstraksi card/list kompetisi (sesuaikan selector class-nya dengan web asli)
+    const kompetisiData = await page.evaluate(() => {
       const articles = document.querySelectorAll('.card, .post-item, article') 
       const results: any[] = []
-
       articles.forEach((el) => {
         const titleEl = el.querySelector('h3, .title, .entry-title')
         const linkEl = el.querySelector('a')
@@ -70,37 +53,54 @@ app.get('/api/competitions/puspresnas', async (c) => {
           })
         }
       })
-
       return results
     })
 
-    // Kembalikan data sukses berformat JSON bersih
-    return c.json({
-      success: true,
-      source: targetUrl,
-      scrapedAt: new Date().toISOString(),
-      data: kometisiData
-    })
-
+    return c.json({ success: true, source: 'puspresnas', data: kompetisiData })
   } catch (error: any) {
-    console.error("Scraping Error:", error)
-    return c.json({ 
-      success: false, 
-      message: "Gagal mengambil data dari Puspresnas", 
-      error: error.message 
-    }, 500)
+    return c.json({ success: false, source: 'puspresnas', error: error.message }, 500)
   } finally {
-    // Pastikan browser SELALU ditutup agar tidak terjadi memory leak (resource zombie)
-    if (browser) {
-      await browser.close()
-    }
+    if (browser) await browser.close()
   }
 })
 
-// 4. Fallback Endpoint untuk mengecek status API
-app.get('/api/health', (c) => {
-  return c.json({ status: "OK", message: "Server API berjalan normal di Edge Workers!" })
+// ========================================================
+// 2. ENDPOINT INFOLOMBA.ID (Pake Fetch + Cheerio Biasa)
+// ========================================================
+app.get('/api/competitions/infolomba', async (c) => {
+  try {
+    const targetUrl = 'https://www.infolomba.id/'
+    const { data } = await axios.get(targetUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    })
+    
+    const $ = cheerio.load(data)
+    const results: any[] = []
+
+    // FIX: Menggunakan .each() milik Cheerio agar TypeScript senang
+    $('.post, .article, .blog-post').each((_, el) => {
+      const title = $(el).find('h2, .post-title').text().trim()
+      const url = $(el).find('a').attr('href') || ''
+      const image = $(el).find('img').attr('src') || ''
+      
+      if (title) {
+        results.push({ title, url, image, description: '' })
+      }
+    })
+
+    return c.json({ success: true, source: 'infolomba', data: results })
+  } catch (error: any) {
+    return c.json({ success: false, source: 'infolomba', error: error.message }, 500)
+  }
 })
 
-// 5. WAJIB: Export default untuk arsitektur ES Modules Cloudflare Workers
+// ========================================================
+// 3. ENDPOINT TAMBAHAN LAIN
+// ========================================================
+app.get('/api/competitions/lainnya', async (c) => {
+  return c.json({ success: true, source: 'lainnya', data: [] })
+})
+
+app.get('/api/health', (c) => c.json({ status: "OK", server: "Cloudflare Workers Edge" }))
+
 export default app
