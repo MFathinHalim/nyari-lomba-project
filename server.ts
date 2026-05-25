@@ -104,20 +104,17 @@ async function fetchHtml(url: string): Promise<string> {
 // Robust Puspresnas RAM Cache Warmup (Cukup Sekali Eksekusi)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function warmUpPuspresnasCache(): Promise<void> {
+async function warmUpPuspresnasCache(env: any): Promise<void> {
   let browser;
   const competitions: Competition[] = [];
-  console.log("[Cache] Memulai pengambilan data Puspresnas Kemendikdasmen (Sekali jalan)...");
+  console.log("[Cache] Memulai Puspresnas via Cloudflare Browser Rendering...");
 
   try {
-    // Membuka Chromium dengan parameter anti-detection bot
-    browser = await chromium.launch({ 
-      headless: true,
-      args: ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-    });
+    // PANGGIL CHROMIUM BAWAAN CLOUDFLARE VIA BINDING
+    browser = await (chromium as any).connectWithBrowser(env.MY_BROWSER);    
     
     const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ...",
       viewport: { width: 1280, height: 720 }
     });
     
@@ -126,12 +123,10 @@ async function warmUpPuspresnasCache(): Promise<void> {
     for (const jenjang of PUSPRESNAS_JENJANGS) {
       const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
       try {
-        console.log(`[Cache] Sedang merayap jenjang: ${jenjang.toUpperCase()}...`);
+        console.log(`[Cache] Scrape jenjang: ${jenjang.toUpperCase()}...`);
         
         await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-        
-        // Jeda ekstra 3 detik biar Client-side JS rendering bawaan webnya selesai sempurna
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(3000); // Jeda render client-side
 
         const html = await page.content();
         const $ = cheerio.load(html);
@@ -172,27 +167,24 @@ async function warmUpPuspresnasCache(): Promise<void> {
           countPerJenjang++;
         });
 
-        console.log(`[Cache Success] Berhasil mengambil ${countPerJenjang} lomba dari jenjang ${jenjang.toUpperCase()}`);
-        
-        // Jeda nafas 4 detik antar-jenjang biar tidak memicu block / rate limit server
-        await delay(4000);
+        console.log(`[Cache Success] Berhasil ambil ${countPerJenjang} lomba dari ${jenjang.toUpperCase()}`);
+        await delay(2000);
 
       } catch (e: any) {
-        console.error(`[Cache Error] Gagal merayap jenjang ${jenjang}. Pesan: ${e.message}`);
+        console.error(`[Cache Error] Gagal di jenjang ${jenjang}: ${e.message}`);
         continue;
       }
     }
     
     GLOBAL_CACHE.puspresnas = competitions;
     GLOBAL_CACHE.isPuspresnasReady = true;
-    console.log(`[Cache Ready] Database Puspresnas sukses dikunci ke RAM: ${competitions.length} event.`);
+    console.log(`[Cache Ready] RAM Cache Terisi: ${competitions.length} event.`);
   } catch (err) {
-    console.error("[Cache Error] Gagal total memuat Puspresnas di awal:", err);
+    console.error("[Cache Error] Gagal total akses Browser Cloudflare:", err);
   } finally {
     if (browser) await browser.close();
   }
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // HTML Parsers (Murni Parse Sesuai Struktur Asli Web)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -477,8 +469,13 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;  
   app.use(express.json());
+  app.use((req: any, res, next) => {
+    // Cloudflare Pages melekatkan context di req.cf atau req.env tergantung adapter
+    req.env = req.env || (req as any).context?.env;
+    next();
+  });
   app.use(cors()); // <-- Aktifkan CORS tepat di bawah express.json()
   // 1. ENDPOINT KILAT LOMBA LOKAL INDONESIA
   app.get("/api/competitions", async (req, res) => {
@@ -496,28 +493,42 @@ async function startServer() {
   });
 
   // 2. ENDPOINT PUSPRESNAS INSTAN (Bebas Lag karena memotong data RAM Cache)
-  app.get("/api/competitions/puspresnas", async (req, res) => {
+app.get("/api/competitions/puspresnas", async (req: any, res) => {
     try {
       const q = (req.query.q as string || "").trim().toLowerCase();
       const category = (req.query.category as string) || "all";
 
-      let competitions = [...GLOBAL_CACHE.puspresnas];
+      // Ambil objek context/env asli milik Cloudflare
+      const cfContext = (req as any).context; 
+      const cloudflareEnv = req.env || cfContext?.env || (globalThis as any).process?.env;
 
-      // Saring query pencarian internal RAM jika user mengetik kata kunci
-      if (q) {
-        competitions = competitions.filter((c) => c.title.toLowerCase().includes(q));
+      // JALANKAN WARMUP JIKA RAM CACHE MASIH KOSONG
+      if (!GLOBAL_CACHE.isPuspresnasReady) {
+        if (cloudflareEnv && cloudflareEnv.MY_BROWSER) {
+          console.log("[Cloudflare] Memicu background scrape karena cache kosong...");
+          
+          // KUNCI: Jika di produksi Cloudflare, gunakan waitUntil agar fungsi tidak dibunuh saat res.json dikirim
+          if (cfContext && typeof cfContext.waitUntil === "function") {
+            cfContext.waitUntil(warmUpPuspresnasCache(cloudflareEnv));
+          } else {
+            // Fallback jika ditesting di localhost biasa
+            warmUpPuspresnasCache(cloudflareEnv);
+          }
+        } else {
+          console.error("[Error] Binding MY_BROWSER tidak ditemukan di Environment!");
+        }
       }
-      
-      if (category !== "all") {
-        competitions = competitions.filter((c) => c.category === category);
-      }
+
+      // Berikan data yang ada sekarang (kosong di request pertama, terisi penuh di request selanjutnya)
+      let competitions = [...GLOBAL_CACHE.puspresnas];
+      if (q) competitions = competitions.filter((c) => c.title.toLowerCase().includes(q));
+      if (category !== "all") competitions = competitions.filter((c) => c.category === category);
 
       res.json(competitions);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Puspresnas data." });
     }
   });
-
   // 3. BATCH ENDPOINT
   app.get("/api/competitions/batch", async (req, res) => {
     try {
@@ -544,7 +555,6 @@ async function startServer() {
 
   app.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`Scraper Backend running on port ${PORT}`);
-    warmUpPuspresnasCache(); 
   });
 }
 
