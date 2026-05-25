@@ -12,3 +12,7 @@ binding = "ASSETS"
 
 [browser]
 binding = "MY_BROWSER"
+
+[[kv_namespaces]]
+binding = "PUSPRESNAS_CACHE"
+id = "375e8df827f44fb2b014e3b08e56e8d6"
