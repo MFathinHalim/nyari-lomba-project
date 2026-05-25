@@ -12,7 +12,6 @@ type Env = {
 
 const app = new Hono<Env>()
 
-// Aktifkan CORS untuk Frontend Vite
 app.use('/api/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'OPTIONS'],
@@ -20,7 +19,7 @@ app.use('/api/*', cors({
 }))
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPERS & DICTIONARY (Sama Persis dengan Server Lama)
+// HELPERS & CONFIGURATIONS
 // ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi"],
@@ -52,15 +51,15 @@ function normalizeId(url: string, prefix: string): string {
 }
 
 const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
   "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+  "Cache-Control": "max-age=0",
 };
 
-// Helper Fetch HTML Axions agar aman di-handle Promise.allSettled
 async function fetchHtml(url: string): Promise<string> {
   try {
-    const response = await axios.get(url, { headers: DEFAULT_HEADERS, timeout: 8000 });
+    const response = await axios.get(url, { headers: DEFAULT_HEADERS, timeout: 6000 });
     return response.data;
   } catch (error) {
     return "";
@@ -68,7 +67,7 @@ async function fetchHtml(url: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MURNI PARSERS (Salinan Logika Server Lama Lu)
+// PARSERS DENGAN PERBAIKAN STRUKTUR POSTER & ELEMEN
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseInfoLomba(html: string, query: string): any[] {
@@ -148,6 +147,7 @@ function parseLuarKampus(html: string): any[] {
   return competitions;
 }
 
+// FUNGSI UTAMAKAN EKSTRAKSI DENGAN REGEX UNTUK OPENPOSTER (KOMPETISI.CO.ID)
 function parseKompetisiCoId(html: string): any[] {
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -162,13 +162,18 @@ function parseKompetisiCoId(html: string): any[] {
     if (!href) return;
     const detailUrl = `https://kompetisi.co.id/${href}`;
 
+    // Perbaikan ekstraksi openPoster menggunakan regex global pada pembungkusnya
     let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (!imageUrl) {
-      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
-      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
-      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    
+    const htmlString = card.html() || "";
+    const posterMatch = htmlString.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/i);
+    if (posterMatch && posterMatch[1]) {
+      imageUrl = posterMatch[1];
     }
-    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `https://kompetisi.co.id/${imageUrl.replace(/^\//, "")}`;
+
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `https://kompetisi.co.id/${imageUrl.replace(/^\//, "")}`;
+    }
 
     competitions.push({
       id: normalizeId(detailUrl, "kompetisicoid"),
@@ -186,6 +191,7 @@ function parseKompetisiCoId(html: string): any[] {
   return competitions;
 }
 
+// FUNGSI EKSTRAKSI UNTUK KOMPETISIONLINE.COM
 function parseKompetisiOnline(html: string, query: string): any[] {
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -207,12 +213,15 @@ function parseKompetisiOnline(html: string, query: string): any[] {
     const detailUrl = href.startsWith("http") ? href : `https://kompetisionline.com/${href.replace(/^\//, "")}`;
 
     let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (!imageUrl) {
-      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
-      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
-      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    const htmlString = card.html() || "";
+    const posterMatch = htmlString.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/i);
+    if (posterMatch && posterMatch[1]) {
+      imageUrl = posterMatch[1];
     }
-    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `https://kompetisionline.com/${imageUrl.replace(/^\//, "")}`;
+
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `https://kompetisionline.com/${imageUrl.replace(/^\//, "")}`;
+    }
 
     const tags: string[] = [];
     card.find("span").each((_, badgeEl) => {
@@ -247,7 +256,7 @@ function parseKompetisiOnline(html: string, query: string): any[] {
 }
 
 // ========================================================
-// 1. ENDPOINT UTAMA (InfoLomba, LuarKampus, Kompetisi.co.id p1 & p2, KompetisiOnline p1 & p2)
+// 1. ENDPOINT UTAMA (DITAMBAH SAMPAI PAGE 4 BIAR BANYAK DATA)
 // ========================================================
 app.get('/api/competitions', async (c) => {
   const query = (c.req.query('q') || "").trim();
@@ -262,13 +271,19 @@ app.get('/api/competitions', async (c) => {
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
 
   try {
-    // Sesuai logic lama: eksekusi semua page secara paralel di Edge network
     const targets = [
       fetchHtml(infolombaUrl).then(h => parseInfoLomba(h, query)),
+      
+      // Mengambil sampai Page 4 agar variasi item melimpah
       fetchHtml("https://kompetisi.co.id/?page=1").then(h => parseKompetisiCoId(h)),
       fetchHtml("https://kompetisi.co.id/?page=2").then(h => parseKompetisiCoId(h)),
+      fetchHtml("https://kompetisi.co.id/?page=3").then(h => parseKompetisiCoId(h)),
+      fetchHtml("https://kompetisi.co.id/?page=4").then(h => parseKompetisiCoId(h)),
+
       fetchHtml("https://kompetisionline.com/?page=1").then(h => parseKompetisiOnline(h, query)),
       fetchHtml("https://kompetisionline.com/?page=2").then(h => parseKompetisiOnline(h, query)),
+      fetchHtml("https://kompetisionline.com/?page=3").then(h => parseKompetisiOnline(h, query)),
+      
       fetchHtml(`https://luarkampus.id/events?month=${currentMonth}`).then(h => parseLuarKampus(h)),
       fetchHtml(`https://luarkampus.id/events?month=${nextMonth}`).then(h => parseLuarKampus(h))
     ];
@@ -279,9 +294,8 @@ app.get('/api/competitions', async (c) => {
     responses.forEach((res, idx) => {
       if (res.status === "fulfilled") {
         if (idx === 0) {
-          rawCompetitions.push(...res.value); // InfoLomba
+          rawCompetitions.push(...res.value);
         } else {
-          // Filter memori lokal untuk web statis halaman utama
           const items = res.value;
           if (!query) {
             rawCompetitions.push(...items);
@@ -294,7 +308,6 @@ app.get('/api/competitions', async (c) => {
       }
     });
 
-    // Deduplikasi judul unik seperti server lama lu
     const uniqueMap = new Map<string, any>();
     rawCompetitions.forEach(comp => {
       const titleKey = comp.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
@@ -306,23 +319,22 @@ app.get('/api/competitions', async (c) => {
       filteredResults = filteredResults.filter(comp => comp.category === categoryFilter);
     }
 
-    return c.json(filteredResults.slice(0, 100));
+    return c.json(filteredResults.slice(0, 150));
   } catch (err) {
     return c.json([]);
   }
 })
 
 // ========================================================
-// 2. ENDPOINT PUSPRESNAS (OPTIMASI ANTI-TIMEOUT CLOUDFLARE)
+// 2. ENDPOINT PUSPRESNAS (FIXED ANTI BOT-BLOCK)
 // ========================================================
 app.get('/api/competitions/puspresnas', async (c) => {
   let browser: puppeteer.Browser | null = null;
   const query = (c.req.query('q') || "").trim().toLowerCase();
   const categoryFilter = c.req.query('category') || "all";
   
-  // Karena Cloudflare Worker tidak menyimpan state background RAM cache startup persistent,
-  // Kita ambil data SMA & SMP yang paling populer dalam sekali panggil agar browser tidak timeout (limit 30 detik).
-  const jenjangs = ["sma", "smp"];
+  // Ambil semua jenjang utama secara berurutan
+  const jenjangs = ["sma", "smp", "sd"];
   const finalPuspresnasList: any[] = [];
 
   try {
@@ -330,44 +342,47 @@ app.get('/api/competitions/puspresnas', async (c) => {
 
     browser = await puppeteer.launch(c.env.MY_BROWSER);
     const page = await browser.newPage();
-    await page.setViewport({ width: 1024, height: 768 });
+    
+    // Injeksi header anti-automation agar server kemendikbud merespon isi DOM
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    await page.setViewport({ width: 1280, height: 800 });
 
     for (const jenjang of jenjangs) {
       try {
         const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
-        await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 12000 });
         
-        // Tunggu 1.5 detik agar hidrasi data client-side SPA kemendikbud selesai dimuat
-        await new Promise(r => setTimeout(r, 1500));
+        // Gunakan 'networkidle0' untuk memastikan request asinkronus internal SPA selesai dieksekusi sempurna
+        await page.goto(targetUrl, { waitUntil: "networkidle0", timeout: 15000 });
 
         const html = await page.content();
         const $ = cheerio.load(html);
 
-        $("div.card").each((_, el) => {
+        // Cari elemen pembungkus list/card (Puspresnas menggunakan struktur grid card bootstrap)
+        $(".card, [class*='card']").each((_, el) => {
           const card = $(el);
-          const titleElement = card.find("a.card-title h5, h5");
+          const titleElement = card.find("h5, .card-title, a strong");
           const title = titleElement.text().trim();
-          if (!title) return;
+          if (!title || title.length < 3) return;
 
-          let detailUrl = card.find("a.card-title").attr("href")?.trim() || targetUrl;
+          let detailUrl = card.find("a").first().attr("href")?.trim() || targetUrl;
           if (detailUrl && !detailUrl.startsWith("http")) {
             detailUrl = `https://pusatprestasinasional.kemendikdasmen.go.id${detailUrl.startsWith("/") ? "" : "/"}${detailUrl}`;
           }
 
-          let imageUrl = card.find("img.card-img-top").attr("src")?.trim() || "";
+          let imageUrl = card.find("img").first().attr("src")?.trim() || "";
           if (imageUrl && !imageUrl.startsWith("http")) {
             imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
           }
 
-          const deadlineText = card.find("span.badge-gray:has(i.fa-calendar-day)").text().trim() || "Lihat Panduan";
+          const deadlineText = card.find(".badge, [class*='badge'], span:has(i)").text().trim() || "Lihat Panduan Resmi";
           
           finalPuspresnasList.push({
             id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
             title,
-            shortDescription: `Kompetisi Resmi Puspresnas Jenjang ${jenjang.toUpperCase()}.`,
+            shortDescription: `Kompetisi Resmi Kemendikbud Puspresnas untuk jenjang akademik ${jenjang.toUpperCase()}.`,
             url: detailUrl,
             source: "Puspresnas",
-            deadline: deadlineText.replace(/[\n\t]/g, "").trim(),
+            deadline: deadlineText.replace(/[\n\t]/g, " ").replace(/\s+/g, " ").trim(),
             category: guessCategory(title),
             tags: ["Puspresnas", jenjang.toUpperCase()],
             isUpcoming: true,
@@ -375,11 +390,21 @@ app.get('/api/competitions/puspresnas', async (c) => {
           });
         });
       } catch (e) {
+        // Lompati jika salah satu jenjang mengalami error jaringan parsial
         continue;
       }
     }
 
     let filteredPuspresnas = finalPuspresnasList;
+    
+    // Hilangkan objek kosong hasil duplikasi pembungkus komponen CSS
+    const uniquePuspresnas = new Map<string, any>();
+    filteredPuspresnas.forEach(item => {
+      const slug = item.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
+      if (!uniquePuspresnas.has(slug)) uniquePuspresnas.set(slug, item);
+    });
+    filteredPuspresnas = Array.from(uniquePuspresnas.values());
+
     if (query) filteredPuspresnas = filteredPuspresnas.filter(c => c.title.toLowerCase().includes(query));
     if (categoryFilter !== "all") filteredPuspresnas = filteredPuspresnas.filter(c => c.category === categoryFilter);
 
@@ -390,23 +415,5 @@ app.get('/api/competitions/puspresnas', async (c) => {
     if (browser) await browser.close();
   }
 })
-
-// ========================================================
-// 3. BATCH ENDPOINT (Sama Persis dengan Server Lama)
-// ========================================================
-app.get("/api/competitions/batch", async (c) => {
-  try {
-    const idsStr = (c.req.query("ids") || "").trim();
-    if (!idsStr) return c.json([]);
-    const ids = idsStr.split(",").filter(Boolean);
-
-    // Ambil data kosong untuk memicu pembacaan seluruh resource utama
-    const allComps = await axios.get(`http://localhost/api/competitions`, { headers: DEFAULT_HEADERS }).then(res => res.data).catch(() => []);
-    const filtered = allComps.filter((c: any) => ids.includes(c.id));
-    return c.json(filtered);
-  } catch (error) {
-    return c.json([]);
-  }
-});
 
 export default app
