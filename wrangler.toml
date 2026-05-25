@@ -1,0 +1,10 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "nantangin" # Sesuaikan dengan nama proyekmu di Cloudflare
+pages_build_output_dir = "dist" # Folder hasil build frontend kamu (biasanya dist atau build)
+
+# Kunci Utama: Mendaftarkan fitur Browser otomatis di server Cloudflare
+[browser]
+binding = "MY_BROWSER"
+
+[compatibility_flags]
+# Memastikan fitur-fitur modern seperti runtime Async/Wait dan Fetch di Edge berjalan mulus

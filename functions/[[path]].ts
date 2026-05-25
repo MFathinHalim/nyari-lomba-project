@@ -1,6 +1,6 @@
-import app from "../server"; // Pastikan path ini mengarah ke file server.ts kamu
+import app from "../server";
 
 export async function onRequest(context: any) {
-  // Oper seluruh request dan environment Cloudflare (termasuk MY_BROWSER) ke Express
+  // Jalankan routing native Hono yang 100% kompatibel dengan Cloudflare Pages Request
   return app.fetch(context.request, context.env, context);
 }

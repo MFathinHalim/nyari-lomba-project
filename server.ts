@@ -1,8 +1,8 @@
-import express from "express";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
 import * as cheerio from "cheerio";
 import axios from "axios";
 import { chromium } from "playwright"; 
-import cors from "cors";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types & Global Cache
@@ -304,7 +304,7 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
       source: "Kompetisi.co.id",
       deadline: deadlineText,
       category: guessCategory(title),
-      tags: ["KompetisiCoId"],
+      tags: ["CompetisiCoId"],
       isUpcoming: true,
       imageUrl,
     }));
@@ -436,114 +436,65 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Express Setup & API Integration
+// HONO Edge Routing (Substitusi Express Total)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const app = express();
-app.use(express.json());
-app.use(cors());
+const app = new Hono<{ Bindings: { MY_BROWSER: any } }>();
 
-// Middleware penangkap Cloudflare runtime environment
-app.use((req: any, res, next) => {
-  req.env = req.env || (req as any).context?.env;
-  next();
-});
+// Pasang CORS bawaan Hono
+app.use("*", cors());
 
 // 1. ENDPOINT KILAT LOMBA LOKAL INDONESIA
-app.get("/api/competitions", async (req, res) => {
+app.get("/api/competitions", async (c) => {
   try {
-    const q = (req.query.q as string || "").trim();
-    const category = (req.query.category as string) || "all";
+    const q = (c.req.query("q") || "").trim();
+    const category = c.req.query("category") || "all";
+    
     let competitions = await fetchFastSourcesOnly(q);
-    if (category !== "all") competitions = competitions.filter((c) => c.category === category);
-    res.json(competitions.slice(0, 100)); 
+    if (category !== "all") competitions = competitions.filter((comp) => comp.category === category);
+    
+    return c.json(competitions.slice(0, 100));
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch competitions." });
+    return c.json({ error: "Failed to fetch competitions." }, 500);
   }
 });
 
-// 2. ENDPOINT PUSPRESNAS NATIVE EDGE CACHE WARMUP
-app.get("/api/competitions/puspresnas", async (req: any, res) => {
+// 2. ENDPOINT PUSPRESNAS INSTAN (Native Edge Worker Lifecycle)
+app.get("/api/competitions/puspresnas", async (c) => {
   try {
-    const q = (req.query.q as string || "").trim().toLowerCase();
-    const category = (req.query.category as string) || "all";
-    const cfContext = (req as any).context; 
-    const cloudflareEnv = req.env || cfContext?.env;
+    const q = (c.req.query("q") || "").trim().toLowerCase();
+    const category = c.req.query("category") || "all";
+    
+    // Sekarang c.env.MY_BROWSER sudah aman dari error TypeScript!
+    const cloudflareEnv = c.env;
 
     if (!GLOBAL_CACHE.isPuspresnasReady && cloudflareEnv?.MY_BROWSER) {
-      if (cfContext && typeof cfContext.waitUntil === "function") {
-        cfContext.waitUntil(warmUpPuspresnasCache(cloudflareEnv));
-      } else {
-        warmUpPuspresnasCache(cloudflareEnv);
-      }
+      console.log("[Cloudflare Edge] Memicu background scrape...");
+      c.executionCtx.waitUntil(warmUpPuspresnasCache(cloudflareEnv));
     }
 
     let competitions = [...GLOBAL_CACHE.puspresnas];
-    if (q) competitions = competitions.filter((c) => c.title.toLowerCase().includes(q));
-    if (category !== "all") competitions = competitions.filter((c) => c.category === category);
-    res.json(competitions);
+    if (q) competitions = competitions.filter((comp) => comp.title.toLowerCase().includes(q));
+    if (category !== "all") competitions = competitions.filter((comp) => comp.category === category);
+    
+    return c.json(competitions);
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch Puspresnas data." });
+    return c.json({ error: "Failed to fetch Puspresnas data." }, 500);
   }
 });
 
 // 3. BATCH ENDPOINT
-app.get("/api/competitions/batch", async (req, res) => {
+app.get("/api/competitions/batch", async (c) => {
   try {
-    const idsStr = (req.query.ids as string || "").trim();
-    if (!idsStr) return res.json([]);
+    const idsStr = (c.req.query("ids") || "").trim();
+    if (!idsStr) return c.json([]);
     const ids = idsStr.split(",").filter(Boolean);
     const allComps = await fetchFastSourcesOnly("");
-    res.json(allComps.filter((c) => ids.includes(c.id)));
+    return c.json(allComps.filter((comp) => ids.includes(comp.id)));
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch batch." });
+    return c.json({ error: "Failed to fetch batch." }, 500);
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Cloudflare Functions Adapter Framework Export (PENGGANTI APP.LISTEN)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export default {
-  async fetch(request: Request, env: any, ctx: any) {
-    // Membangun ulang siklus request Express manual agar dimengerti Cloudflare Pages
-    return new Promise<Response>((resolve) => {
-      const url = new URL(request.url);
-      
-      // Inject data context Cloudflare ke dalam mock request Express
-      const reqMock: any = {
-        method: request.method,
-        url: url.pathname + url.search,
-        headers: Object.fromEntries(request.headers.entries()),
-        env: env,
-        context: ctx,
-        query: Object.fromEntries(url.searchParams.entries())
-      };
-
-      // Handler penampung response kiriman Express
-      const resMock: any = {
-        statusCode: 200,
-        headers: {},
-        setHeader(name: string, value: string) { this.headers[name.toLowerCase()] = value; },
-        getHeader(name: string) { return this.headers[name.toLowerCase()]; },
-        status(code: number) { this.statusCode = code; return this; },
-        json(data: any) {
-          this.setHeader("content-type", "application/json");
-          resolve(new Response(JSON.stringify(data), {
-            status: this.statusCode,
-            headers: this.headers
-          }));
-        },
-        send(data: any) {
-          resolve(new Response(data, {
-            status: this.statusCode,
-            headers: this.headers
-          }));
-        }
-      };
-
-      // Alirkan data objek request ke router Express
-      app(reqMock, resMock);
-    });
-  }
-};
+// Ekspor default Hono
+export default app;
