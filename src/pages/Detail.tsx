@@ -82,7 +82,7 @@ export default function Detail() {
             {competition.shortDescription}
           </p>
         {competition.imageUrl && (
-          <div className="w-full mb-4 border-2 aspect-3/4 border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow">
+          <div className="w-full mb-4 border-2 border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow">
             <img 
               src={competition.imageUrl} 
               alt={competition.title}

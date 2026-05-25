@@ -286,20 +286,39 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
 
   $(".group.bg-white").each((_, el) => {
     const card = $(el);
-    const title = card.find("h3").text().trim();
+    let title = card.find("h3").text().trim();
     if (!title) return;
+
+    // Bersihkan spasi ganda atau tab bawaan HTML pada judul
+    title = title.replace(/\s+/g, " ");
 
     let href = card.find("a[href*='kompetisi?id=']").first().attr("href")?.trim() || "";
     if (!href) return;
-    const detailUrl = `${baseUrl}/${href}`;
+    const detailUrl = `${baseUrl}/${href.replace(/^\//, "")}`;
 
-    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (!imageUrl) {
-      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
-      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
-      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    // ─── AMBIL POSTER DARI TOMBOL OPENPOSTER ───
+    let imageUrl = "";
+    const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
+    const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
+    
+    if (posterMatch && posterMatch[1]) {
+      imageUrl = posterMatch[1].trim();
+    } else {
+      // Fallback ke gambar logo kecil di bagian atas jika tombol poster tidak terbaca
+      imageUrl = card.find("img").first().attr("src")?.trim() || "";
     }
-    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
+
+    // Ubah path relatif menjadi link gambar absolut yang bisa dibuka di frontend
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
+    }
+
+    // Ambil Deadline dari baris jadwal final di HTML
+    let deadlineText = "Lihat Jadwal";
+    const finalRow = card.find("div:has(span:contains('Final'))").last();
+    if (finalRow.length) {
+      deadlineText = finalRow.find("span").last().text().trim();
+    }
 
     competitions.push(normalizeCompetition({
       id: normalizeId(detailUrl, "kompetisicoid"),
@@ -307,11 +326,11 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
       shortDescription: `Kompetisi Terkurasi oleh Kompetisi.co.id.`,
       url: detailUrl,
       source: "Kompetisi.co.id",
-      deadline: "Lihat Jadwal",
+      deadline: deadlineText,
       category: guessCategory(title),
       tags: ["KompetisiCoId"],
       isUpcoming: true,
-      imageUrl,
+      imageUrl, // Sekarang berisi link poster utama berukuran besar!
     }));
   });
   return competitions;
@@ -324,50 +343,48 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
   const lowerQuery = query.toLowerCase();
   const baseUrl = "https://kompetisionline.com";
 
-  // Sesuai HTML: Setiap kartu dibungkus oleh elemen class '.group.bg-white'
   $(".group.bg-white").each((_, el) => {
     const card = $(el);
     
-    // 1. Ambil Judul Lomba dari elemen h3
     let title = card.find("h3").text().trim();
-    // Hilangkan teks tambahan seperti (INFINIBEE ) jika ada di dalam span bawaan judul
     card.find("h3 span").each((_, spanEl) => {
       const spanText = $(spanEl).text();
       title = title.replace(spanText, "").trim();
     });
+    title = title.replace(/\s+/g, " ");
     
     if (!title) return;
 
-    // 2. Ambil Link Detail dari a[href*='kompetisi?id=']
     const anchor = card.find("a[href*='kompetisi?id=']").first();
     let href = anchor.attr("href")?.trim() || "";
-    if (!href) return; // Jika tidak ada link pendaftaran/detail, lewati
+    if (!href) return; 
     
     const detailUrl = href.startsWith("http") ? href : `${baseUrl}/${href.replace(/^\//, "")}`;
     const id = normalizeId(detailUrl, "kompetisionline");
 
-    // 3. Ambil Gambar / Poster (Prioritaskan logo, fallback ke parameter openPoster jika ada)
-    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (!imageUrl) {
-      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
-      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
-      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    // ─── AMBIL POSTER DARI TOMBOL OPENPOSTER ───
+    let imageUrl = "";
+    const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
+    const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
+    
+    if (posterMatch && posterMatch[1]) {
+      imageUrl = posterMatch[1].trim();
+    } else {
+      imageUrl = card.find("img").first().attr("src")?.trim() || "";
     }
+
     if (imageUrl && !imageUrl.startsWith("http")) {
       imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
     }
 
-    // 4. Ekstraksi Tags/Kategori (LVL. Advanced, Nasional, Online, dll)
     const tags: string[] = [];
     card.find("span").each((_, badgeEl) => {
       const tagText = $(badgeEl).text().trim();
-      // Filter teks tanggal atau sub-batch agar tidak masuk ke tags kategori utama
       if (tagText && tagText.length < 20 && !/2026|Penyisihan|Final|Batch/i.test(tagText)) {
         tags.push(tagText);
       }
     });
 
-    // 5. Ambil info Jadwal/Deadline jika tersedia (opsional untuk akurasi data)
     let deadlineText = "Lihat di Web";
     const finalScheduleEl = card.find("div:has(span:contains('Final'))").last();
     if (finalScheduleEl.length) {
@@ -384,15 +401,13 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
       category: guessCategory(`${title} ${tags.join(" ")}`),
       tags: tags.length > 0 ? tags : ["KompetisiOnline"],
       isUpcoming: true,
-      imageUrl,
+      imageUrl, // Link poster aman terkendali!
     });
 
-    // 6. Filter pencarian kata kunci internal
     if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery) || tags.some(t => t.toLowerCase().includes(lowerQuery))) {
       competitions.push(competition);
     }
   });
-
   return competitions;
 }
 
