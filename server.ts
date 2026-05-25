@@ -340,67 +340,97 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
   if (!env.MY_BROWSER) return [];
   
   const competitions: Competition[] = [];
-  const jenjangs = ["sd", "smp", "sma"];
+  const PUSPRESNAS_JENJANGS = ["sd", "smp", "sma"];
   
-  const browser = await puppeteer.launch(env.MY_BROWSER);
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 720 });
-  await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+  let browser;
+  try {
+    // Jalankan browser bawaan Cloudflare
+    browser = await puppeteer.launch(env.MY_BROWSER);
+    const page = await browser.newPage();
+    
+    // Set ukuran layar dan User Agent agar menyerupai browser lokal lu
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-  for (const jenjang of jenjangs) {
-    try {
+    for (const jenjang of PUSPRESNAS_JENJANGS) {
       const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       
-      // Tunggu client-side js rendering 3 detik persis logic Playwright lu
-      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        // Menggunakan networkidle2 sebagai padanan terbaik networkidle di Cloudflare
+        await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 30000 });
+        
+        // Jeda waktu tunggu render halaman javascript selesai (padanan waitForTimeout)
+        await new Promise((r) => setTimeout(r, 1000)); 
 
-      const html = await page.content();
-      const $ = cheerio.load(html);
+        const html = await page.content();
+        const $ = cheerio.load(html);
 
-      $("div.card").each((_, el) => {
-        const card = $(el);
-        const titleElement = card.find("a.card-title h5, h5");
-        const title = titleElement.text().trim();
-        if (!title) return;
+        $("div.card").each((_, el) => {
+          const card = $(el);
+          
+          const titleElement = card.find("a.card-title h5, h5");
+          const title = titleElement.text().trim();
+          
+          if (!title) return;
 
-        let detailUrl = card.find("a.card-title").attr("href")?.trim() || targetUrl;
-        if (!detailUrl.startsWith("http")) {
-          detailUrl = `https://pusatprestasinasional.kemendikdasmen.go.id${detailUrl.startsWith("/") ? "" : "/"}${detailUrl}`;
-        }
+          let detailUrl = card.find("a.card-title").attr("href")?.trim() 
+                        || card.find("a:contains('Detail')").attr("href")?.trim() 
+                        || targetUrl;
 
-        let imageUrl = card.find("img.card-img-top").attr("src")?.trim() || "";
-        if (imageUrl && !imageUrl.startsWith("http")) {
-          imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
-        }
+          if (detailUrl && !detailUrl.startsWith("http")) {
+            detailUrl = `https://pusatprestasinasional.kemendikdasmen.go.id${detailUrl.startsWith("/") ? "" : "/"}${detailUrl}`;
+          }
 
-        const deadlineText = card.find("span.badge-gray:has(i.fa-calendar-day)").text().trim() || "Lihat Panduan";
+          let imageUrl = card.find("img.card-img-top").attr("src")?.trim() || "";
+          if (imageUrl && !imageUrl.startsWith("http")) {
+            imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
+          }
 
-        competitions.push(normalizeCompetition({
-          id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
-          title,
-          shortDescription: `Kompetisi Resmi Puspresnas Jenjang ${jenjang.toUpperCase()}.`,
-          url: detailUrl,
-          source: "Puspresnas",
-          deadline: deadlineText.replace(/[\n\t]/g, "").trim(),
-          category: guessCategory(title),
-          tags: ["Puspresnas", jenjang.toUpperCase()],
-          isUpcoming: true,
-          imageUrl
-        }));
-      });
+          const categoryTag = card.find("span.badge-orange").text().trim() || "Ajang Talenta";
+          
+          const deadlineText = card.find("span.badge-gray:has(i.fa-calendar-day)").text().trim() 
+                             || card.find("span.badge-gray").first().text().trim() 
+                             || "Lihat Panduan";
+          
+          const cleanedDeadline = deadlineText.replace(/[\n\t]/g, "").trim();
+          const id = normalizeId(detailUrl, `puspresnas-${jenjang}`);
+          const tingkatText = card.find("span.badge-gray:has(i.fa-flag)").text().trim() || "Nasional";
 
-      // Jeda nafas 4 detik antar-jenjang biar aman
-      await new Promise((r) => setTimeout(r, 4000));
-    } catch {
-      continue;
+          const description = `Kompetisi Resmi Puspresnas Jenjang ${jenjang.toUpperCase()} - Kemendikdasmen RI. Tingkat ${tingkatText}.`;
+
+          const competition = normalizeCompetition({
+            id,
+            title,
+            shortDescription: description,
+            url: detailUrl,
+            source: `Puspresnas (${jenjang.toUpperCase()})`,
+            deadline: cleanedDeadline,
+            category: guessCategory(title) || categoryTag,
+            tags: ["Puspresnas", "Kemendikdasmen", jenjang.toUpperCase()],
+            isUpcoming: true,
+            imageUrl
+          });
+
+          // Duplication & filter handling persis kodingan lu
+          if (!competitions.some(c => c.id === competition.id)) {
+            competitions.push(competition);
+          }
+        });
+
+      } catch (jenjangErr: any) {
+        console.error(`[Puspresnas] Gagal ambil jenjang ${jenjang}:`, jenjangErr.message);
+        continue; 
+      }
     }
+
+    return competitions;
+  } catch (err: any) {
+    console.error("[Puspresnas Headless Server Error]:", err.message);
+    return [];
+  } finally {
+    if (browser) await browser.close(); 
   }
-
-  await browser.close();
-  return competitions;
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // HONO API ENDPOINTS ROUTING
 // ─────────────────────────────────────────────────────────────────────────────
