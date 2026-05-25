@@ -1,7 +1,15 @@
-name = "nantangin"
-pages_build_output_dir = "dist"
+#:schema node_modules/wrangler/config-schema.json
+name = "nama-proyek-kamu"
 compatibility_date = "2026-05-25"
 compatibility_flags = [ "nodejs_compat" ]
+
+# Triknya di sini: Kita arahkan entrypoint utamanya ke hasil compile server Hono lu
+main = "dist/server.cjs"
+
+# Kita arahkan folder static frontend-nya ke folder dist
+[assets]
+directory = "./dist"
+binding = "ASSETS"
 
 [browser]
 binding = "MY_BROWSER"
