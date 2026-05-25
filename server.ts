@@ -405,7 +405,7 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
     });
 
     if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery) || tags.some(t => t.toLowerCase().includes(lowerQuery))) {
-      competitions.push(competition);
+      competitions.push(competition);  
     }
   });
   return competitions;
