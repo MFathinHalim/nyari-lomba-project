@@ -4,10 +4,10 @@ compatibility_date = "2026-05-25"
 compatibility_flags = [ "nodejs_compat" ]
 
 # Arahkan ke file format ESM (.js) hasil build baru
-main = "dist/server.js"
+main = "server.js"
 
 [assets]
-directory = "./dist"
+directory = "dist"
 binding = "ASSETS"
 
 [browser]
