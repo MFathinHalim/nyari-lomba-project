@@ -1,19 +1,16 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import * as cheerio from 'cheerio'
-import * as puppeteer from '@cloudflare/puppeteer'
 import axios from 'axios'
 
 type Env = {
   Bindings: {
-    MY_BROWSER: puppeteer.BrowserWorker
-    PUSPRESNAS_KV: KVNamespace
+    PUSPRESNAS_KV: any
   }
 }
 
 const app = new Hono<Env>()
 
-// Mengaktifkan CORS untuk semua endpoint API
 app.use('/api/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'OPTIONS'],
@@ -21,7 +18,7 @@ app.use('/api/*', cors({
 }))
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TYPES & CONFIGURATION
+// DATA TYPES & INTERFACES
 // ─────────────────────────────────────────────────────────────────────────────
 interface Competition {
   id: string;
@@ -36,6 +33,24 @@ interface Competition {
   imageUrl: string; 
 }
 
+interface DevpostHackathonRaw {
+  id: number;
+  title: string;
+  tagline?: string;
+  url: string;
+  is_open?: boolean;
+  submission_period_dates?: string; 
+  themes?: { name: string }[];
+  prize_amount?: string;
+  registrations_count?: number;
+  featured?: boolean;
+  open_state?: string; 
+  thumbnail_url?: string; 
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS & KEYWORDS
+// ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi"],
   Arts: ["design", "art", "creative", "illustration", "visual", "film", "festival", "movie", "video", "sinematografi", "foto", "photography", "poster", "lukis", "gambar", "musik", "lagu", "seni", "olahraga", "o2sn", "fls2n"],
@@ -51,6 +66,9 @@ const DEFAULT_HEADERS = {
   "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
 function guessCategory(raw: string): string {
   const content = raw.toLowerCase();
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
@@ -86,16 +104,68 @@ function normalizeId(url: string, prefix: string): string {
 
 async function fetchHtml(url: string): Promise<string> {
   try {
-    const response = await axios.get(url, { headers: DEFAULT_HEADERS, timeout: 10000 });
+    const response = await axios.get(url, {
+      headers: DEFAULT_HEADERS,
+      timeout: 12000, 
+    });
     return response.data;
-  } catch {
+  } catch (error: any) {
+    console.error(`[Scraper Error] Gagal fetch HTML: ${url}. Error: ${error.message}`);
     return ""; 
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PARSERS (INFO LOMBA, LUAR KAMPUS, KOMPETISI CO ID, KOMPETISI ONLINE)
+// PARSERS & FAST SOURCE FETCHERS
 // ─────────────────────────────────────────────────────────────────────────────
+async function fetchDevpostCompetitions(query: string): Promise<Competition[]> {
+  try {
+    const params = new URLSearchParams({
+      challenge_type: "all",
+      order_by: "recently-added",
+      page: "1",
+    });
+    if (query) params.set("search", query);
+
+    const url = `https://devpost.com/hackathons.json?${params.toString()}`;
+    const res = await axios.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://devpost.com/hackathons",
+      },
+      timeout: 10000
+    });
+
+    const data = res.data;
+    const hackathons: DevpostHackathonRaw[] = data?.hackathons ?? [];
+
+    return hackathons.slice(0, 30).map((h): Competition => {
+      const tags = (h.themes ?? []).map((t) => t.name).filter(Boolean);
+      const raw = `${h.title} ${h.tagline ?? ""} ${tags.join(" ")}`;
+      const deadlineRaw = h.submission_period_dates?.split(" - ").pop()?.trim() ?? "TBA";
+
+      return normalizeCompetition({
+        id: normalizeId(h.url, "devpost"),
+        title: h.title,
+        shortDescription: h.tagline || "Hackathon listed on Devpost.",
+        url: h.url,
+        source: "Devpost",
+        deadline: deadlineRaw,
+        category: guessCategory(raw),
+        tags: tags.slice(0, 10),
+        isUpcoming: h.open_state !== "ended",
+        imageUrl: h.thumbnail_url || "", 
+      });
+    });
+  } catch (err: any) {
+    console.error("[Devpost Error] Gagal ambil data Devpost:", err.message);
+    return []; 
+  }
+}
+
 function parseInfoLombaCompetitions(html: string, query: string): Competition[] {
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -109,44 +179,72 @@ function parseInfoLombaCompetitions(html: string, query: string): Competition[] 
     const title = anchor.text().trim();
     if (!title) return;
 
-    let finalUrl = "";
     const onClickAttr = anchor.attr("onclick")?.trim() || "";
+    let finalUrl = "";
+
     const match = onClickAttr.match(/loadDetailsEvent\s*\(\s*(\d+)\s*,\s*['"]([^'"]+)['"]/);
     if (match && match[1] && match[2]) {
       finalUrl = `${baseUrl}/info-${match[2]}-${match[1]}`;
     } else {
       let href = anchor.attr("href")?.trim() || "";
-      if (href && href !== "#") finalUrl = href.startsWith("http") ? href : `${baseUrl}${href}`;
+      if (href && !href.startsWith("javascript:") && href !== "#") {
+        finalUrl = href.startsWith("http") ? href : `${baseUrl}${href.startsWith("/") ? "" : "/"}${href}`;
+      }
+    }
+    if (!finalUrl) return;
+
+    const id = normalizeId(finalUrl, "infolomba");
+    const imgEl = container.find(".img-container img").first();
+    let imageUrl = imgEl.attr("src")?.trim() || "";
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = imageUrl.startsWith("/") ? `${baseUrl}${imageUrl}` : `${baseUrl}/${imageUrl}`;
     }
 
-    let imageUrl = container.find(".img-container img").first().attr("src")?.trim() || "";
-    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `${baseUrl}/${imageUrl}`;
+    const targetText = container.find(".target").text().trim(); 
+    const biayaText = container.find(".biaya").text().trim();   
+    const lokasiText = container.find(".lokasi").text().trim(); 
+    const tanggalText = container.find(".tanggal").text().trim(); 
+    const penyelenggara = container.find(".penyelenggara div span").not(".subtitle").text().trim();
 
-    const tanggalText = container.find(".tanggal").text().trim();
+    const description = `Penyelenggara: ${penyelenggara || "TBA"}. Target Peserta: ${targetText}. Biaya: ${biayaText}. Location: ${lokasiText}.`;
+
+    let deadline = "TBA";
+    if (tanggalText) {
+      const dateParts = tanggalText.split("-");
+      deadline = dateParts.length > 1 ? dateParts[1].trim() : tanggalText;
+    }
+
+    const tagSet = new Set<string>();
+    if (targetText) targetText.split(",").forEach(t => { if (t.trim()) tagSet.add(t.trim()); });
+    if (lokasiText) tagSet.add(lokasiText);
+    if (biayaText.toLowerCase().includes("gratis") || biayaText.includes("Rp 0")) tagSet.add("Gratis");
+
     const competition = normalizeCompetition({
-      id: normalizeId(finalUrl, "infolomba"),
+      id,
       title,
-      shortDescription: `Info lomba terupdate via InfoLomba.id.`,
+      shortDescription: description,
       url: finalUrl,
       source: "InfoLomba",
-      deadline: tanggalText.split("-").pop()?.trim() || tanggalText,
-      category: guessCategory(title),
-      tags: ["InfoLomba"],
+      deadline,
+      category: guessCategory(`${title} ${description}`),
+      tags: Array.from(tagSet).slice(0, 10),
       isUpcoming: !container.hasClass("event-past"),
-      imageUrl,
+      imageUrl, 
     });
 
     if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery)) {
       competitions.push(competition);
     }
   });
+
   return competitions;
 }
 
-function parseLuarKampusCompetitions(html: string): Competition[] {
+function parseLuarKampusCompetitions(html: string, query: string): Competition[] {
   if (!html) return [];
   const $ = cheerio.load(html);
   const competitions: Competition[] = [];
+  const lowerQuery = query.toLowerCase();
   const baseUrl = "https://luarkampus.id";
 
   $("a[href*='/events/']").each((_, el) => {
@@ -155,33 +253,61 @@ function parseLuarKampusCompetitions(html: string): Competition[] {
     if (!title) return;
 
     let href = card.attr("href")?.trim() || "";
-    const detailUrl = href.startsWith("http") ? href : `${baseUrl}${href}`;
-    
-    let rawImg = card.find("img").first().attr("src")?.trim() || "";
-    let imageUrl = rawImg ? (rawImg.startsWith("http") ? rawImg : `${baseUrl}/${rawImg.startsWith("/") ? "" : "/"}${rawImg}`) : "";
+    const detailUrl = href.startsWith("http") ? href : `${baseUrl}${href.startsWith("/") ? "" : "/"}${href}`;
+    const id = normalizeId(detailUrl, "luarkampus");
 
-    const deadline = card.find("span.text-red-600 b").text().trim() || "TBA";
+    let imageUrl = card.find("img[src*='/storage/event/']").attr("src")?.trim() || "";
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `${baseUrl}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`;
+    }
 
-    competitions.push(normalizeCompetition({
-      id: normalizeId(detailUrl, "luarkampus"),
+    const penyelenggara = card.find(".text-gray-700 span").eq(0).text().trim();
+    const tingkat = card.find(".text-gray-700 span").eq(1).text().trim();
+    const lokasi = card.find(".text-gray-700 div.flex.items-center span").text().trim();
+
+    const description = `Penyelenggara: ${penyelenggara || "TBA"}. Tingkat: ${tingkat || "Umum"}. Lokasi: ${lokasi || "Indonesia"}.`;
+
+    const tagSet = new Set<string>();
+    card.find("span.bg-success").each((_, tagEl) => {
+      const tagText = $(tagEl).text().trim();
+      if (tagText && tagText !== "9+") tagSet.add(tagText);
+    });
+
+    if (lokasi) tagSet.add(lokasi);
+    if (tingkat.toLowerCase().includes("fully funded") || tingkat.toLowerCase().includes("gratis")) tagSet.add("Gratis");
+
+    const deadlineContainer = card.find("span.text-red-600");
+    let deadline = "TBA";
+    if (deadlineContainer.length > 0) {
+      deadline = deadlineContainer.find("b").text().trim() || deadlineContainer.text().replace("Deadline:", "").trim();
+    }
+
+    const competition = normalizeCompetition({
+      id,
       title,
-      shortDescription: `Info event kompetisi mahasiswa dari LuarKampus.`,
+      shortDescription: description,
       url: detailUrl,
       source: "LuarKampus",
       deadline,
-      category: guessCategory(title),
-      tags: ["LuarKampus"],
-      isUpcoming: true,
-      imageUrl
-    }));
+      category: guessCategory(`${title} ${description}`),
+      tags: Array.from(tagSet),
+      isUpcoming: true, 
+      imageUrl,
+    });
+
+    if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery)) {
+      competitions.push(competition);
+    }
   });
+
   return competitions;
 }
 
-function parseKompetisiCoIdCompetitions(html: string): Competition[] {
+function parseKompetisiCoIdCompetitions(html: string, query: string): Competition[] {
   if (!html) return [];
   const $ = cheerio.load(html);
   const competitions: Competition[] = [];
+  const lowerQuery = query.toLowerCase();
   const baseUrl = "https://kompetisi.co.id";
 
   $(".group.bg-white").each((_, el) => {
@@ -189,31 +315,52 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
     const title = card.find("h3").text().trim();
     if (!title) return;
 
-    let href = card.find("a[href*='kompetisi?id=']").first().attr("href")?.trim() || "";
+    const registrationAnchor = card.find("a[href*='kompetisi?id=']").first();
+    let href = registrationAnchor.attr("href")?.trim() || "";
     if (!href) return;
-    const detailUrl = `${baseUrl}/${href}`;
+    const detailUrl = href.startsWith("http") ? href : `${baseUrl}/${href}`;
+    const id = normalizeId(detailUrl, "kompetisicoid");
 
-    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (!imageUrl) {
-      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
-      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
-      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
+    let imageUrl = "";
+    const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
+    if (posterMatch && posterMatch[1]) {
+      imageUrl = posterMatch[1].startsWith("http") ? posterMatch[1] : `${baseUrl}/${posterMatch[1]}`;
     }
-    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
 
-    competitions.push(normalizeCompetition({
-      id: normalizeId(detailUrl, "kompetisicoid"),
+    const tags: string[] = [];
+    card.find("span.rounded-md").each((_, tagEl) => {
+      const tagText = $(tagEl).text().trim();
+      if (tagText) tags.push(tagText);
+    });
+
+    let deadline = "TBA";
+    card.find(".flex.justify-between.items-center").each((_, scheduleEl) => {
+      const phaseName = $(scheduleEl).find("span").eq(0).text().trim().toLowerCase();
+      const phaseDate = $(scheduleEl).find("span").eq(1).text().trim();
+      if (phaseName.includes("final") || phaseName.includes("penyisihan") || phaseName.includes("deadline")) {
+        deadline = phaseDate;
+      }
+    });
+
+    const competition = normalizeCompetition({
+      id,
       title,
       shortDescription: `Kompetisi Terkurasi oleh Kompetisi.co.id.`,
       url: detailUrl,
       source: "Kompetisi.co.id",
-      deadline: "Lihat Jadwal",
-      category: guessCategory(title),
-      tags: ["KompetisiCoId"],
+      deadline,
+      category: guessCategory(`${title} ${tags.join(" ")}`),
+      tags,
       isUpcoming: true,
       imageUrl,
-    }));
+    });
+
+    if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery)) {
+      competitions.push(competition);
+    }
   });
+
   return competitions;
 }
 
@@ -224,44 +371,26 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
   const lowerQuery = query.toLowerCase();
   const baseUrl = "https://kompetisionline.com";
 
-  $(".group.bg-white").each((_, el) => {
-    const card = $(el);
-    let title = card.find("h3").text().trim();
-    card.find("h3 span").each((_, spanEl) => {
-      title = title.replace($(spanEl).text(), "").trim();
-    });
-    if (!title) return;
+  $("a[href*='?id=']").each((_, el) => {
+    const anchor = $(el);
+    const title = anchor.find("h3, h4, p").first().text().trim() || anchor.text().trim();
+    if (!title || title.length < 5 || title.toLowerCase().includes("selengkapnya")) return;
 
-    const anchor = card.find("a[href*='kompetisi?id=']").first();
     let href = anchor.attr("href")?.trim() || "";
-    if (!href) return; 
-    
     const detailUrl = href.startsWith("http") ? href : `${baseUrl}/${href.replace(/^\//, "")}`;
     const id = normalizeId(detailUrl, "kompetisionline");
 
-    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (!imageUrl) {
-      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
-      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
-      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
-    }
+    const parentCard = anchor.closest("div[class*='card'], div[class*='box'], .portfolio-item");
+    let imageUrl = parentCard.find("img").first().attr("src")?.trim() || "";
     if (imageUrl && !imageUrl.startsWith("http")) {
       imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
     }
 
     const tags: string[] = [];
-    card.find("span").each((_, badgeEl) => {
+    parentCard.find("span, .badge").each((_, badgeEl) => {
       const tagText = $(badgeEl).text().trim();
-      if (tagText && tagText.length < 20 && !/2026|Penyisihan|Final|Batch/i.test(tagText)) {
-        tags.push(tagText);
-      }
+      if (tagText && tagText.length < 20) tags.push(tagText);
     });
-
-    let deadlineText = "Lihat di Web";
-    const finalScheduleEl = card.find("div:has(span:contains('Final'))").last();
-    if (finalScheduleEl.length) {
-      deadlineText = finalScheduleEl.find("span").last().text().trim();
-    }
 
     const competition = normalizeCompetition({
       id,
@@ -269,17 +398,18 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
       shortDescription: `Info lomba terupdate via KompetisiOnline.com.`,
       url: detailUrl,
       source: "KompetisiOnline",
-      deadline: deadlineText, 
+      deadline: "Lihat di Web", 
       category: guessCategory(`${title} ${tags.join(" ")}`),
-      tags: tags.length > 0 ? tags : ["KompetisiOnline"],
+      tags: tags.length > 0 ? tags : ["Competitions"],
       isUpcoming: true,
       imageUrl,
     });
 
-    if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery) || tags.some(t => t.toLowerCase().includes(lowerQuery))) {
+    if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery)) {
       competitions.push(competition);
     }
   });
+
   return competitions;
 }
 
@@ -288,44 +418,44 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
   const encodedQuery = encodeURIComponent(normalizedQuery);
 
   const infolombaUrl = normalizedQuery
-    ? `https://www.infolomba.id/events?sort=Default&title=${encodedQuery}`
+    ? `https://www.infolomba.id/events?sort=Default&title=${encodedQuery}+&peserta=Semua+Peserta&lokasi=Semua+Lokasi&kategori=Semua+Kategori`
     : "https://www.infolomba.id/events";
 
   const currentMonth = new Date().getMonth() + 1; 
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
-
-  const promises = [
-    fetchHtml(infolombaUrl).then((html) => parseInfoLombaCompetitions(html, normalizedQuery)),
-    fetchHtml("https://kompetisi.co.id/?page=1").then((html) => parseKompetisiCoIdCompetitions(html)),
-    fetchHtml("https://kompetisi.co.id/?page=2").then((html) => parseKompetisiCoIdCompetitions(html)),
-    fetchHtml("https://kompetisionline.com/?page=1").then((html) => parseKompetisiOnline(html, normalizedQuery)),
-    fetchHtml("https://kompetisionline.com/?page=2").then((html) => parseKompetisiOnline(html, normalizedQuery)),
-    fetchHtml(`https://luarkampus.id/events?month=${currentMonth}`).then((html) => parseLuarKampusCompetitions(html)),
-    fetchHtml(`https://luarkampus.id/events?month=${nextMonth}`).then((html) => parseLuarKampusCompetitions(html)),
+  const luarkampusUrls = [
+    `https://luarkampus.id/events?month=${currentMonth}`,
+    `https://luarkampus.id/events?month=${nextMonth}`
   ];
 
-  const results = await Promise.allSettled(promises);
-  const rawCompetitions: Competition[] = [];
+  const kompetisiCoIdP1 = normalizedQuery ? `https://kompetisi.co.id/?page=1&q=${encodedQuery}` : "https://kompetisi.co.id/?page=1";
+  const kompetisiCoIdP2 = normalizedQuery ? `https://kompetisi.co.id/?page=2&q=${encodedQuery}` : "https://kompetisi.co.id/?page=2";
 
-  results.forEach((result, idx) => {
-    if (result.status === "fulfilled") {
-      if (idx === 0) {
-        rawCompetitions.push(...result.value);
-      } else {
-        const items = result.value;
-        if (!normalizedQuery) {
-          rawCompetitions.push(...items);
-        } else {
-          const lowerQ = normalizedQuery.toLowerCase();
-          const filteredItems = items.filter(comp => comp.title.toLowerCase().includes(lowerQ));
-          rawCompetitions.push(...filteredItems);
-        }
-      }
-    }
+  const kompetisiOnlineP1 = `https://kompetisionline.com/?page=1&q=${encodedQuery}`;
+  const kompetisiOnlineP2 = `https://kompetisionline.com/?page=2&q=${encodedQuery}`;
+
+  const promises: Promise<Competition[]>[] = [
+    fetchDevpostCompetitions(normalizedQuery), 
+    fetchHtml(infolombaUrl).then((html) => parseInfoLombaCompetitions(html, normalizedQuery)),
+    fetchHtml(kompetisiCoIdP1).then((html) => parseKompetisiCoIdCompetitions(html, normalizedQuery)),
+    fetchHtml(kompetisiCoIdP2).then((html) => parseKompetisiCoIdCompetitions(html, normalizedQuery)),
+    fetchHtml(kompetisiOnlineP1).then((html) => parseKompetisiOnline(html, normalizedQuery)),
+    fetchHtml(kompetisiOnlineP2).then((html) => parseKompetisiOnline(html, normalizedQuery)),
+  ];
+
+  luarkampusUrls.forEach(url => {
+    promises.push(fetchHtml(url).then((html) => parseLuarKampusCompetitions(html, normalizedQuery)));
+  });
+
+  const results = await Promise.allSettled(promises);
+  const competitions: Competition[] = [];
+
+  results.forEach((result) => {
+    if (result.status === "fulfilled") competitions.push(...result.value);
   });
 
   const uniqueMap = new Map<string, Competition>();
-  rawCompetitions.forEach(comp => {
+  competitions.forEach(comp => {
     const titleKey = comp.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
     if (!uniqueMap.has(titleKey)) uniqueMap.set(titleKey, comp);
   });
@@ -334,56 +464,27 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CLOUDFLARE BROWSER ENGINE (PUSPRESNAS SCRAPER)
+// PUSPRESNAS SCRAPER (KHUSUS BACKGROUND THREAD)
 // ─────────────────────────────────────────────────────────────────────────────
-async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competition[]> {
+async function runPuspresnasScraperEngine(): Promise<Competition[]> {
   const competitions: Competition[] = [];
   const PUSPRESNAS_JENJANGS = ["sd", "smp", "sma"];
 
-  // Headers super lengkap untuk nipu WAF Puspresnas biar dikira browser asli, bukan bot server
-  const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control": "max-age=0",
-    "Sec-Ch-Ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1"
-  };
-
   for (const jenjang of PUSPRESNAS_JENJANGS) {
-    const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
-    
     try {
-      // Ambil HTML mentah secara cepat tanpa lewat runtime browser puppeteer yang rawan diblokir
-      const response = await axios.get(targetUrl, { headers, timeout: 15000 });
-      const html = response.data;
-      
-      if (!html || html.includes("Access Denied") || html.includes("Cloudflare to restrict access")) {
-        console.error(`[Puspresnas] IP Cloudflare Workers diblokir oleh WAF Puspresnas untuk jenjang ${jenjang}`);
-        continue;
-      }
+      const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
+      const html = await fetchHtml(targetUrl);
+      if (!html) continue;
 
       const $ = cheerio.load(html);
 
-      // PARSE DETIL ASLI MILIK LU KEMARIN
       $("div.card").each((_, el) => {
         const card = $(el);
-        
         const titleElement = card.find("a.card-title h5, h5");
         const title = titleElement.text().trim();
-        
         if (!title) return;
 
-        let detailUrl = card.find("a.card-title").attr("href")?.trim() 
-                      || card.find("a:contains('Detail')").attr("href")?.trim() 
-                      || targetUrl;
-
+        let detailUrl = card.find("a.card-title").attr("href")?.trim() || targetUrl;
         if (detailUrl && !detailUrl.startsWith("http")) {
           detailUrl = `https://pusatprestasinasional.kemendikdasmen.go.id${detailUrl.startsWith("/") ? "" : "/"}${detailUrl}`;
         }
@@ -394,21 +495,14 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
         }
 
         const categoryTag = card.find("span.badge-orange").text().trim() || "Ajang Talenta";
-        
-        const deadlineText = card.find("span.badge-gray:has(i.fa-calendar-day)").text().trim() 
-                           || card.find("span.badge-gray").first().text().trim() 
-                           || "Lihat Panduan";
-        
+        const deadlineText = card.find("span.badge-gray:has(i.fa-calendar-day)").text().trim() || "Lihat Panduan";
         const cleanedDeadline = deadlineText.replace(/[\n\t]/g, "").trim();
-        const id = normalizeId(detailUrl, `puspresnas-${jenjang}`);
         const tingkatText = card.find("span.badge-gray:has(i.fa-flag)").text().trim() || "Nasional";
 
-        const description = `Kompetisi Resmi Puspresnas Jenjang ${jenjang.toUpperCase()} - Kemendikdasmen RI. Tingkat ${tingkatText}.`;
-
-        const competition = normalizeCompetition({
-          id,
+        competitions.push(normalizeCompetition({
+          id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
           title,
-          shortDescription: description,
+          shortDescription: `Kompetisi Resmi Puspresnas Jenjang ${jenjang.toUpperCase()}. Tingkat ${tingkatText}.`,
           url: detailUrl,
           source: `Puspresnas (${jenjang.toUpperCase()})`,
           deadline: cleanedDeadline,
@@ -416,108 +510,108 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
           tags: ["Puspresnas", "Kemendikdasmen", jenjang.toUpperCase()],
           isUpcoming: true,
           imageUrl
-        });
-
-        if (!competitions.some(c => c.id === competition.id)) {
-          competitions.push(competition);
-        }
+        }));
       });
-
-    } catch (jenjangErr: any) {
-      console.error(`[Puspresnas] Gagal request jengjang ${jenjang}:`, jenjangErr.message);
+    } catch {
       continue; 
     }
   }
-
-  // Jika sukses dapet data asli, fallback ini gak bakal kepake
   return competitions;
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
-// HONO API ENDPOINTS ROUTING
+// HONO API ROUTING
 // ─────────────────────────────────────────────────────────────────────────────
 
-// 1. Endpoint Lomba Umum Indonesia (FIX 404)
+// 1. ENDPOINT UTAMA: Ambil 5 Website Cepat (Bebas CPU limit karena Fetch standar)
 app.get("/api/competitions", async (c) => {
   try {
     const q = (c.req.query("q") || "").trim();
     const category = c.req.query("category") || "all";
 
     let competitions = await fetchFastSourcesOnly(q);
-    if (category !== "all") competitions = competitions.filter((comp) => comp.category === category);
+
+    if (category !== "all") {
+      competitions = competitions.filter((comp) => comp.category === category);
+    }
 
     return c.json(competitions.slice(0, 100)); 
-  } catch {
-    return c.json({ error: "Failed to fetch competitions." }, 500);
+  } catch (error) {
+    return c.json({ error: "Failed to fetch general competitions." }, 500);
   }
 });
 
-// 2. Endpoint Puspresnas KV (FIX 500)
+// 2. ENDPOINT PUSPRESNAS: Mengambil data instant dari cache KV Storage
 app.get("/api/competitions/puspresnas", async (c) => {
   try {
     const q = (c.req.query("q") || "").trim().toLowerCase();
     const category = c.req.query("category") || "all";
 
-    // Mengambil cache permanen dari Cloudflare KV Storage
     const cachedData = await c.env.PUSPRESNAS_KV.get("puspresnas_data");
-    
-    let competitions: Competition[] = [];
-    if (cachedData) {
-      competitions = JSON.parse(cachedData);
-    } else {
-      return c.json({ 
-        message: "Data KV kosong. Jalankan /force-scrape terlebih dahulu.", 
-        data: [] 
-      });
+    if (!cachedData) {
+      return c.json([]);
     }
 
-    if (q) competitions = competitions.filter((comp) => comp.title.toLowerCase().includes(q));
-    if (category !== "all") competitions = competitions.filter((comp) => comp.category === category);
+    let competitions: Competition[] = JSON.parse(cachedData);
+
+    if (q) {
+      competitions = competitions.filter(comp => comp.title.toLowerCase().includes(q));
+    }
+    if (category !== "all") {
+      competitions = competitions.filter(comp => comp.category === category);
+    }
 
     return c.json(competitions);
   } catch {
-    return c.json({ error: "Failed to read data from storage binding." }, 500);
+    return c.json({ error: "Failed to read storage" }, 500);
   }
 });
 
-// 3. Endpoint Force Scrape Manual untuk Trigger Isi KV Pertama Kali
-app.get("/api/competitions/puspresnas/force-scrape", async (c) => {
-  try {
-    const data = await runPuspresnasScraperEngine(c.env);
-    if (data.length > 0) {
-      await c.env.PUSPRESNAS_KV.put("puspresnas_data", JSON.stringify(data));
-      return c.json({ success: true, message: `Berhasil scrape manual ${data.length} data ke KV.` });
-    }
-    return c.json({ success: false, message: "Scraper berjalan namun menangkap 0 data." }, 400);
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// 4. Batch Endpoint
+// 3. ENDPOINT BATCH RETRIEVAL
 app.get("/api/competitions/batch", async (c) => {
   try {
     const idsStr = (c.req.query("ids") || "").trim();
     if (!idsStr) return c.json([]);
-    const ids = idsStr.split(",").filter(Boolean);
 
+    const ids = idsStr.split(",").filter(Boolean);
     const allComps = await fetchFastSourcesOnly("");
     const filtered = allComps.filter((comp) => ids.includes(comp.id));
+
     return c.json(filtered);
-  } catch {
-    return c.json({ error: "Failed to fetch batch." }, 500);
+  } catch (error) {
+    return c.json({ error: "Failed to fetch batch competitions." }, 500);
   }
 });
 
+// 4. TRIGGER SCRAPE MANUAL KE BACKGROUND THREAD (ANTI CPU CRASH)
+app.get("/api/competitions/puspresnas/force-scrape", async (c) => {
+  c.executionCtx.waitUntil(
+    runPuspresnasScraperEngine().then(async (data) => {
+      if (data && data.length > 0) {
+        await c.env.PUSPRESNAS_KV.put("puspresnas_data", JSON.stringify(data));
+        console.log(`[Sync] Sukses update ${data.length} data Puspresnas ke KV.`);
+      }
+    })
+  );
+
+  return c.json({ 
+    success: true, 
+    message: "Scraper Puspresnas berjalan aman di background. Silakan cek ulang endpoint utama dalam 15 detik!" 
+  });
+});
+
+app.get("/", (c) => c.text("Nantangin Multi-Source API Engine is online! 🚀"));
+
 // ─────────────────────────────────────────────────────────────────────────────
-// CLOUDFLARE WORKERS EXPORT (CRON TRIGGER + FETCH INJECTION)
+// WORKERS EVENT EXPORTS & CRON SCHEDULER
 // ─────────────────────────────────────────────────────────────────────────────
 export default {
-  fetch: app.fetch, // Handle Request API Hono biasa
+  fetch: app.fetch,
   
-  // Otomatis berjalan setiap jam di background untuk memperbarui isi KV tanpa mengganggu user
+  // Otomatis update data Puspresnas di background secara berkala
   async scheduled(event: any, env: Env['Bindings'], ctx: ExecutionContext) {
     ctx.waitUntil(
-      runPuspresnasScraperEngine(env).then(async (data) => {
+      runPuspresnasScraperEngine().then(async (data) => {
         if (data && data.length > 0) {
           await env.PUSPRESNAS_KV.put("puspresnas_data", JSON.stringify(data));
         }
