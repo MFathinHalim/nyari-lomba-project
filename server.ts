@@ -5,7 +5,6 @@ import axios from 'axios'
 
 const app = new Hono()
 
-// Aktifkan CORS global agar Frontend Vite lu gak diblokir browser
 app.use('/api/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'OPTIONS'],
@@ -13,7 +12,7 @@ app.use('/api/*', cors({
 }))
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIGURATIONS & DICTIONARY
+// UTILITIES
 // ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi"],
@@ -44,24 +43,23 @@ function normalizeId(url: string, prefix: string): string {
   return `${prefix}:${cleaned}`;
 }
 
-// User-Agent Chrome Desktop asli wajib hukumnya buat bypass block robot Puspresnas
-const COMP_HEADERS = {
+const COMMON_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-  "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+  "Accept": "application/json, text/html, */*",
+  "Accept-Language": "id-ID,id;q=0.9",
 };
 
 async function fetchHtml(url: string): Promise<string> {
   try {
-    const response = await axios.get(url, { headers: COMP_HEADERS, timeout: 6000 });
+    const response = await axios.get(url, { headers: COMMON_HEADERS, timeout: 6000 });
     return response.data;
-  } catch (error) {
+  } catch {
     return "";
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PARSERS MURNI 100% REPLIKA LOGIC LAMA LU (LENGKAP DENGAN FIX REGEX POSTER)
+// PARSERS (LOMBA UMUM & REGEX OPENPOSTER)
 // ─────────────────────────────────────────────────────────────────────────────
 function parseInfoLomba(html: string, query: string): any[] {
   if (!html) return [];
@@ -153,14 +151,14 @@ function parseKompetisiCoId(html: string): any[] {
     if (!href) return;
     const detailUrl = `https://kompetisi.co.id/${href}`;
 
-    // FIX CONCEPT OPENPOSTER: Ambil langsung dari regex string HTML card bawaan lu
+    // FIX RADIKAL OPENPOSTER: Extract via attribute onclick / inner HTML string matching
     let imageUrl = card.find("img").first().attr("src")?.trim() || "";
     const cardHtml = card.html() || "";
     
-    // Toleransi variasi penulisan spasi/kutip pada string openPoster('url')
+    // Tangkap string apa pun di dalam fungsi openPoster('...') atau openPoster("...")
     const posterMatch = cardHtml.match(/openPoster\s*\(\s*['"]\s*([^'"]+?)\s*['"]\s*\)/i);
     if (posterMatch && posterMatch[1]) {
-      imageUrl = posterMatch[1];
+      imageUrl = posterMatch[1].trim();
     }
 
     if (imageUrl && !imageUrl.startsWith("http")) {
@@ -207,7 +205,7 @@ function parseKompetisiOnline(html: string, query: string): any[] {
     const cardHtml = card.html() || "";
     const posterMatch = cardHtml.match(/openPoster\s*\(\s*['"]\s*([^'"]+?)\s*['"]\s*\)/i);
     if (posterMatch && posterMatch[1]) {
-      imageUrl = posterMatch[1];
+      imageUrl = posterMatch[1].trim();
     }
 
     if (imageUrl && !imageUrl.startsWith("http")) {
@@ -247,7 +245,7 @@ function parseKompetisiOnline(html: string, query: string): any[] {
 }
 
 // ========================================================
-// 1. ENDPOINT LOMBA UMUM (Halaman Melimpah p1-p4 + Poster Fix)
+// 1. ENDPOINT LOMBA UMUM (Multi Halaman Berfungsi Penuh)
 // ========================================================
 app.get('/api/competitions', async (c) => {
   const query = (c.req.query('q') || "").trim();
@@ -309,67 +307,73 @@ app.get('/api/competitions', async (c) => {
 })
 
 // ========================================================
-// 2. ENDPOINT PUSPRESNAS ULTRA LIGHTWEIGHT (ANTI 503 SERVICE UNAVAILABLE)
+// 2. ENDPOINT PUSPRESNAS (DIRECT INTERNAL API BYPASS METHOD)
 // ========================================================
 app.get('/api/competitions/puspresnas', async (c) => {
   const query = (c.req.query('q') || "").trim().toLowerCase();
   const categoryFilter = c.req.query('category') || "all";
   
-  const jenjangs = ["sma", "smp", "sd"];
+  // ID Kategori internal Puspresnas: 3 = SMA, 2 = SMP, 1 = SD
+  const categories = [
+    { id: 3, name: "SMA" },
+    { id: 2, name: "SMP" },
+    { id: 1, name: "SD" }
+  ];
   const finalPuspresnasList: any[] = [];
 
   try {
-    // Jalankan parsing asinkronus murni pakai Axios paralel (Super hemat RAM Worker)
-    const scrapePromises = jenjangs.map(async (jenjang) => {
-      const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
-      const html = await fetchHtml(targetUrl);
-      if (!html) return;
-
-      const $ = cheerio.load(html);
-
-      // DOM Selector puspresnas paling presisi: Ambil element card-body bawaan list event mereka
-      $(".card-body, .card, [class*='card']").each((_, el) => {
-        const card = $(el);
+    // Kita bypass HTML scraping, langsung tembak API gateway resmi data puspresnas kemendikbud
+    const requests = categories.map(async (cat) => {
+      try {
+        const apiUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/api/kompetisi?kategori_id=${cat.id}&limit=20&page=1`;
+        const response = await axios.get(apiUrl, { headers: COMMON_HEADERS, timeout: 7000 });
         
-        // Target element text judul utama di dalam grid card puspresnas
-        const title = card.find("h5, h6, .card-title, strong, a p").first().text().trim();
-        if (!title || title.length < 4 || title.includes("Kemendikbud")) return;
+        // Memastikan payload API valid
+        const resData = response.data;
+        const items = resData?.data?.data || resData?.data || [];
 
-        let href = card.find("a").first().attr("href")?.trim() || card.parent().attr("href")?.trim() || "";
-        if (!href || href === "#") return;
-        
-        const detailUrl = href.startsWith("http") ? href : `https://pusatprestasinasional.kemendikdasmen.go.id${href.startsWith("/") ? "" : "/"}${href}`;
-        
-        let imageUrl = card.find("img").first().attr("src")?.trim() || card.parent().find("img").first().attr("src")?.trim() || "";
-        if (imageUrl && !imageUrl.startsWith("http")) {
-          imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
+        if (Array.isArray(items)) {
+          items.forEach((item: any) => {
+            const title = item.nama_kompetisi || item.title || item.nama || "";
+            if (!title) return;
+
+            // Generate URL detail berdasarkan slug/id bawaan objek API mereka
+            const slug = item.slug || item.id;
+            const detailUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/kompetisi/detail/${slug}`;
+            
+            let imageUrl = item.foto || item.image || item.poster || "";
+            if (imageUrl && !imageUrl.startsWith("http")) {
+              imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
+            }
+
+            const deadlineText = item.tanggal_pelaksanaan || item.waktu || "Lihat Panduan";
+
+            finalPuspresnasList.push({
+              id: normalizeId(detailUrl, `puspresnas-${cat.name.toLowerCase()}`),
+              title,
+              shortDescription: `Kompetisi Resmi Kemendikbud Puspresnas tingkat ${cat.name}.`,
+              url: detailUrl,
+              source: "Puspresnas",
+              deadline: String(deadlineText).trim(),
+              category: guessCategory(title),
+              tags: ["Puspresnas", cat.name],
+              isUpcoming: true,
+              imageUrl
+            });
+          });
         }
-
-        // Tangkap badge tanggal kalender event
-        const deadlineText = card.find("span, [class*='badge'], .text-muted").text().trim() || "Lihat Panduan";
-
-        finalPuspresnasList.push({
-          id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
-          title,
-          shortDescription: `Kompetisi Resmi Puspresnas Nasional Jenjang ${jenjang.toUpperCase()}.`,
-          url: detailUrl,
-          source: "Puspresnas",
-          deadline: deadlineText.replace(/[\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40),
-          category: guessCategory(title),
-          tags: ["Puspresnas", jenjang.toUpperCase()],
-          isUpcoming: true,
-          imageUrl
-        });
-      });
+      } catch {
+        // Abaikan error parsial per jenjang agar thread request lainnya tetap lancar
+      }
     });
 
-    await Promise.all(scrapePromises);
+    await Promise.all(requests);
 
-    // Filter Duplikasi data kembar akibat multi-selector css class
+    // Filter duplikasi data
     const uniqueMap = new Map<string, any>();
     finalPuspresnasList.forEach(item => {
-      const slug = item.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
-      if (!uniqueMap.has(slug)) uniqueMap.set(slug, item);
+      const uniqueSlug = item.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
+      if (!uniqueMap.has(uniqueSlug)) uniqueMap.set(uniqueSlug, item);
     });
     
     let filteredPuspresnas = Array.from(uniqueMap.values());
@@ -378,7 +382,7 @@ app.get('/api/competitions/puspresnas', async (c) => {
     if (categoryFilter !== "all") filteredPuspresnas = filteredPuspresnas.filter(c => c.category === categoryFilter);
 
     return c.json(filteredPuspresnas);
-  } catch (err: any) {
+  } catch (err) {
     return c.json([]);
   }
 })
