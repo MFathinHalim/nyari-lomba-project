@@ -1,9 +1,7 @@
-#:schema node_modules/wrangler/config-schema.json
-name = "nantangin" # Sesuaikan dengan nama proyekmu di Cloudflare
-pages_build_output_dir = "dist" # Folder hasil build frontend kamu (biasanya dist atau build)
+name = "nantangin"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-05-25"
+compatibility_flags = [ "nodejs_compat" ]
 
-# Kunci Utama: Mendaftarkan fitur Browser otomatis di server Cloudflare
 [browser]
 binding = "MY_BROWSER"
-
-compatibility_flags = [ "nodejs_compat" ]
