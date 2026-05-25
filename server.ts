@@ -1,17 +1,11 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import * as puppeteer from '@cloudflare/puppeteer'
 import * as cheerio from 'cheerio'
 import axios from 'axios'
 
-type Env = {
-  Bindings: {
-    MY_BROWSER: puppeteer.BrowserWorker
-  }
-}
+const app = new Hono()
 
-const app = new Hono<Env>()
-
+// Aktifkan CORS global agar Frontend Vite lu gak diblokir browser
 app.use('/api/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'OPTIONS'],
@@ -19,7 +13,7 @@ app.use('/api/*', cors({
 }))
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPERS & CONFIGURATIONS
+// CONFIGURATIONS & DICTIONARY
 // ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi"],
@@ -50,15 +44,16 @@ function normalizeId(url: string, prefix: string): string {
   return `${prefix}:${cleaned}`;
 }
 
-const DEFAULT_HEADERS = {
+// User-Agent Chrome Desktop asli wajib hukumnya buat bypass block robot Puspresnas
+const COMP_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-  "Accept-Language": "id-ID,id;q=0.9,en;q=0.8,en;q=0.7",
+  "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
 };
 
 async function fetchHtml(url: string): Promise<string> {
   try {
-    const response = await axios.get(url, { headers: DEFAULT_HEADERS, timeout: 7000 });
+    const response = await axios.get(url, { headers: COMP_HEADERS, timeout: 6000 });
     return response.data;
   } catch (error) {
     return "";
@@ -66,7 +61,7 @@ async function fetchHtml(url: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PARSERS (100% SAMA PERSIS DENGAN KODE LAMA LU + FIX POSTER)
+// PARSERS MURNI 100% REPLIKA LOGIC LAMA LU (LENGKAP DENGAN FIX REGEX POSTER)
 // ─────────────────────────────────────────────────────────────────────────────
 function parseInfoLomba(html: string, query: string): any[] {
   if (!html) return [];
@@ -158,11 +153,11 @@ function parseKompetisiCoId(html: string): any[] {
     if (!href) return;
     const detailUrl = `https://kompetisi.co.id/${href}`;
 
-    // ELEMEN POSTER KHUSUS (OPENPOSTER) FIXED DENGAN REGEX KUAT
+    // FIX CONCEPT OPENPOSTER: Ambil langsung dari regex string HTML card bawaan lu
     let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    
-    // Scan seluruh HTML di card ini untuk mencari fungsi openPoster bawaan lu
     const cardHtml = card.html() || "";
+    
+    // Toleransi variasi penulisan spasi/kutip pada string openPoster('url')
     const posterMatch = cardHtml.match(/openPoster\s*\(\s*['"]\s*([^'"]+?)\s*['"]\s*\)/i);
     if (posterMatch && posterMatch[1]) {
       imageUrl = posterMatch[1];
@@ -251,53 +246,8 @@ function parseKompetisiOnline(html: string, query: string): any[] {
   return competitions;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SCRIPT PARSER KHUSUS PUSPRESNAS LAYOUT BARU (UNIVERSAL SELECTOR)
-// ─────────────────────────────────────────────────────────────────────────────
-function parsePuspresnasHtml(html: string, jenjang: string): any[] {
-  if (!html) return [];
-  const $ = cheerio.load(html);
-  const list: any[] = [];
-
-  // Puspresnas memakai SSR Hydration, kita target element card bootstrap atau anchor detailnya langsung
-  $("a[href*='/kompetisi/detail/'], .card, [class*='card'], .grid > div").each((_, el) => {
-    const node = $(el);
-    
-    // Ambil title dari teks berbobot tebal paling pertama di dalam block kontainer komponen
-    const title = node.find("h5, h6, .card-title, strong, p.font-bold").first().text().trim();
-    if (!title || title.length < 4 || title.includes("Kemendikbud")) return;
-
-    let href = node.attr("href")?.trim() || node.find("a").first().attr("href")?.trim() || "";
-    if (!href || href === "#") return;
-    
-    const detailUrl = href.startsWith("http") ? href : `https://pusatprestasinasional.kemendikdasmen.go.id${href.startsWith("/") ? "" : "/"}${href}`;
-    
-    let imageUrl = node.find("img").first().attr("src")?.trim() || "";
-    if (imageUrl && !imageUrl.startsWith("http")) {
-      imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
-    }
-
-    const deadlineText = node.find("[class*='badge'], span:has(i), .text-gray-500").text().trim() || "Lihat Panduan";
-
-    list.push({
-      id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
-      title,
-      shortDescription: `Kompetisi Resmi Puspresnas Nasional Jenjang ${jenjang.toUpperCase()}.`,
-      url: detailUrl,
-      source: "Puspresnas",
-      deadline: deadlineText.replace(/[\n\t]/g, " ").replace(/\s+/g, " ").trim(),
-      category: guessCategory(title),
-      tags: ["Puspresnas", jenjang.toUpperCase()],
-      isUpcoming: true,
-      imageUrl
-    });
-  });
-
-  return list;
-}
-
 // ========================================================
-// 1. ENDPOINT LOMBA UMUM (Banyak Halaman, Poster Aman)
+// 1. ENDPOINT LOMBA UMUM (Halaman Melimpah p1-p4 + Poster Fix)
 // ========================================================
 app.get('/api/competitions', async (c) => {
   const query = (c.req.query('q') || "").trim();
@@ -359,90 +309,78 @@ app.get('/api/competitions', async (c) => {
 })
 
 // ========================================================
-// 2. ENDPOINT PUSPRESNAS (ANTI BLOKIR + LOGGER DIAGNOSTIK)
+// 2. ENDPOINT PUSPRESNAS ULTRA LIGHTWEIGHT (ANTI 503 SERVICE UNAVAILABLE)
 // ========================================================
 app.get('/api/competitions/puspresnas', async (c) => {
-  let browser: puppeteer.Browser | null = null;
   const query = (c.req.query('q') || "").trim().toLowerCase();
   const categoryFilter = c.req.query('category') || "all";
   
   const jenjangs = ["sma", "smp", "sd"];
   const finalPuspresnasList: any[] = [];
-  const logs: string[] = []; // Wadah penanda / tracer
 
-  // STRATEGI UTAMA: Coba jalankan Browser Renderer bawaan Cloudflare Worker
-  if (c.env.MY_BROWSER) {
-    try {
-      logs.push("Mencoba inisialisasi Cloudflare Headless Browser...");
-      browser = await puppeteer.launch(c.env.MY_BROWSER);
-      const page = await browser.newPage();
-      await page.setViewport({ width: 1280, height: 800 });
-      await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+  try {
+    // Jalankan parsing asinkronus murni pakai Axios paralel (Super hemat RAM Worker)
+    const scrapePromises = jenjangs.map(async (jenjang) => {
+      const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
+      const html = await fetchHtml(targetUrl);
+      if (!html) return;
 
-      for (const jenjang of jenjangs) {
-        try {
-          const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
-          logs.push(`Browser membuka URL jenjang ${jenjang}...`);
-          
-          await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 12000 });
-          await new Promise(r => setTimeout(r, 2500)); // Tunggu hidrasi JS DOM kelar
+      const $ = cheerio.load(html);
 
-          const html = await page.content();
-          const parsedItems = parsePuspresnasHtml(html, jenjang);
-          logs.push(`Jenjang ${jenjang} via Browser menghasilkan: ${parsedItems.length} item.`);
-          
-          finalPuspresnasList.push(...parsedItems);
-        } catch (innerErr: any) {
-          logs.push(`Gagal memuat jenjang ${jenjang} di browser: ${innerErr.message}`);
+      // DOM Selector puspresnas paling presisi: Ambil element card-body bawaan list event mereka
+      $(".card-body, .card, [class*='card']").each((_, el) => {
+        const card = $(el);
+        
+        // Target element text judul utama di dalam grid card puspresnas
+        const title = card.find("h5, h6, .card-title, strong, a p").first().text().trim();
+        if (!title || title.length < 4 || title.includes("Kemendikbud")) return;
+
+        let href = card.find("a").first().attr("href")?.trim() || card.parent().attr("href")?.trim() || "";
+        if (!href || href === "#") return;
+        
+        const detailUrl = href.startsWith("http") ? href : `https://pusatprestasinasional.kemendikdasmen.go.id${href.startsWith("/") ? "" : "/"}${href}`;
+        
+        let imageUrl = card.find("img").first().attr("src")?.trim() || card.parent().find("img").first().attr("src")?.trim() || "";
+        if (imageUrl && !imageUrl.startsWith("http")) {
+          imageUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
         }
-      }
-    } catch (browserErr: any) {
-      logs.push(`Browser global bermasalah: ${browserErr.message}. Beralih ke Taktik API Fallback...`);
-    } finally {
-      if (browser) await browser.close();
-    }
-  } else {
-    logs.push("Binding MY_BROWSER tidak ditemukan di Wrangler.toml. Menjalankan Taktik API Fallback langsung!");
-  }
 
-  // STRATEGI CADANGAN (FALLBACK): Jika browser diblokir Cloudflare/Timeout, tembak HTML langsung
-  if (finalPuspresnasList.length === 0) {
-    logs.push("Menjalankan Taktik API Fallback (Direct Axios Scraper)...");
-    for (const jenjang of jenjangs) {
-      try {
-        const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
-        const html = await fetchHtml(targetUrl);
-        const parsedItems = parsePuspresnasHtml(html, jenjang);
-        logs.push(`Fallback jenjang ${jenjang} menghasilkan: ${parsedItems.length} item.`);
-        finalPuspresnasList.push(...parsedItems);
-      } catch (fallbackErr: any) {
-        logs.push(`Fallback untuk jenjang ${jenjang} juga gagal: ${fallbackErr.message}`);
-      }
-    }
-  }
+        // Tangkap badge tanggal kalender event
+        const deadlineText = card.find("span, [class*='badge'], .text-muted").text().trim() || "Lihat Panduan";
 
-  // Deduplikasi Item Hasil Gabungan
-  const uniqueMap = new Map<string, any>();
-  finalPuspresnasList.forEach(item => {
-    const slug = item.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
-    if (!uniqueMap.has(slug)) uniqueMap.set(slug, item);
-  });
-  
-  let filteredPuspresnas = Array.from(uniqueMap.values());
-
-  if (query) filteredPuspresnas = filteredPuspresnas.filter(c => c.title.toLowerCase().includes(query));
-  if (categoryFilter !== "all") filteredPuspresnas = filteredPuspresnas.filter(c => c.category === categoryFilter);
-
-  // Jika hasilnya masih kosong, kita return log penandanya biar lu tau persis rusaknya di mana!
-  if (filteredPuspresnas.length === 0) {
-    return c.json({
-      success: false,
-      message: "Data Puspresnas kosong total. Silakan cek tracer log di bawah ini untuk melihat masalah sistem.",
-      tracer_logs: logs
+        finalPuspresnasList.push({
+          id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
+          title,
+          shortDescription: `Kompetisi Resmi Puspresnas Nasional Jenjang ${jenjang.toUpperCase()}.`,
+          url: detailUrl,
+          source: "Puspresnas",
+          deadline: deadlineText.replace(/[\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40),
+          category: guessCategory(title),
+          tags: ["Puspresnas", jenjang.toUpperCase()],
+          isUpcoming: true,
+          imageUrl
+        });
+      });
     });
-  }
 
-  return c.json(filteredPuspresnas);
+    await Promise.all(scrapePromises);
+
+    // Filter Duplikasi data kembar akibat multi-selector css class
+    const uniqueMap = new Map<string, any>();
+    finalPuspresnasList.forEach(item => {
+      const slug = item.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
+      if (!uniqueMap.has(slug)) uniqueMap.set(slug, item);
+    });
+    
+    let filteredPuspresnas = Array.from(uniqueMap.values());
+
+    if (query) filteredPuspresnas = filteredPuspresnas.filter(c => c.title.toLowerCase().includes(query));
+    if (categoryFilter !== "all") filteredPuspresnas = filteredPuspresnas.filter(c => c.category === categoryFilter);
+
+    return c.json(filteredPuspresnas);
+  } catch (err: any) {
+    return c.json([]);
+  }
 })
 
 export default app
