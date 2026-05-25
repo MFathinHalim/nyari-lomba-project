@@ -322,7 +322,7 @@ async function fetchAllDataStream() {
                 </div>
                 <div className="col-span-2 border-2 border-zinc-900 bg-[#00e5ff] p-3 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex items-center gap-3">
                   <Sparkles className="w-6 h-6 shrink-0 animate-spin [animation-duration:6s]" />
-                  <span className="text-xs font-black uppercase tracking-tight">Tersedia data dari Puspresnas juga!</span>
+                  <span className="text-xs font-black uppercase tracking-tight">data dari 4 website berbeda</span>
                 </div>
               </div>
             </div>
