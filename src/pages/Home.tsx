@@ -132,10 +132,10 @@ async function fetchAllDataStream() {
   setLoading(true);
   setError("");
   setPuspresnasNotice("");
-  
-  const fastUrl = new URL("/api/competitions", window.location.href);
-  const puspresnasUrl = new URL("/api/competitions/puspresnas", window.location.href);
-  
+  const BASE_URL = "https://nantangin.fathincoding.workers.dev/";
+  const fastUrl = new URL(`${BASE_URL}/api/competitions`, window.location.href);
+  const puspresnasUrl = new URL(`${BASE_URL}/api/competitions/puspresnas`, window.location.href);
+
   if (searchQuery.trim()) {
     fastUrl.searchParams.append("q", searchQuery);
     puspresnasUrl.searchParams.append("q", searchQuery);
