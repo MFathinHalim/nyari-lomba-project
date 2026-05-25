@@ -1,12 +1,11 @@
 #:schema node_modules/wrangler/config-schema.json
-name = "nama-proyek-kamu"
+name = "nantangin"   # <-- Sudah diganti sesuai ekspektasi Cloudflare
 compatibility_date = "2026-05-25"
 compatibility_flags = [ "nodejs_compat" ]
 
-# Triknya di sini: Kita arahkan entrypoint utamanya ke hasil compile server Hono lu
-main = "dist/server.cjs"
+# Arahkan ke file format ESM (.js) hasil build baru
+main = "dist/server.js"
 
-# Kita arahkan folder static frontend-nya ke folder dist
 [assets]
 directory = "./dist"
 binding = "ASSETS"

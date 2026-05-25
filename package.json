@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=neutral --format=esm --packages=external --sourcemap --outfile=dist/server.js",
     "deploy": "echo 'Deploy dikendalikan otomatis oleh Cloudflare Pages'",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
@@ -13,6 +13,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.1.0",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
