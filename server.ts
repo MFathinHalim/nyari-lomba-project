@@ -7,12 +7,13 @@ import axios from 'axios'
 type Env = {
   Bindings: {
     MY_BROWSER: puppeteer.BrowserWorker
-    PUSPRESNAS_KV: KVNamespace // Wadah RAM permanen Cloudflare
+    PUSPRESNAS_KV: KVNamespace
   }
 }
 
 const app = new Hono<Env>()
 
+// Mengaktifkan CORS untuk semua endpoint API
 app.use('/api/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'OPTIONS'],
@@ -20,7 +21,7 @@ app.use('/api/*', cors({
 }))
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TYPES & CONFIG
+// TYPES & CONFIGURATION
 // ─────────────────────────────────────────────────────────────────────────────
 interface Competition {
   id: string;
@@ -44,6 +45,12 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   IT: ["hackathon", "software", "developer", "web", "app", "blockchain", "programming", "coding", "ui/ux", "cyber", "data science", "ai", "cloud"],
 };
 
+const DEFAULT_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+};
+
 function guessCategory(raw: string): string {
   const content = raw.toLowerCase();
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
@@ -52,12 +59,282 @@ function guessCategory(raw: string): string {
   return "IT"; 
 }
 
+function normalizeCompetition(comp: Partial<Competition>): Competition {
+  return {
+    id: comp.id || `unknown-${Math.random().toString(36).slice(2, 8)}`,
+    title: comp.title || "Untitled Competition",
+    shortDescription: comp.shortDescription || "No description available.",
+    url: comp.url || "#",
+    source: comp.source || "Unknown",
+    deadline: comp.deadline || "TBA",
+    category: comp.category || "IT",
+    tags: comp.tags || [],
+    isUpcoming: comp.isUpcoming ?? true,
+    imageUrl: comp.imageUrl || "", 
+  };
+}
+
 function normalizeId(url: string, prefix: string): string {
-  return `${prefix}:${url.replace(/https?:\/\//, "").replace(/[\W_]+/g, "-").replace(/^-+|-+$/g, "")}`;
+  const cleaned = url
+    .replace(/https?:\/\//, "")
+    .replace(/\?.*$/, "")
+    .replace(/[#/]+$/, "")
+    .replace(/[\W_]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${prefix}:${cleaned}`;
+}
+
+async function fetchHtml(url: string): Promise<string> {
+  try {
+    const response = await axios.get(url, { headers: DEFAULT_HEADERS, timeout: 10000 });
+    return response.data;
+  } catch {
+    return ""; 
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SUNGGOH-SUNGGOH CHROMIUM SCRAPER (HANYA JALAN DI BACKGROUND)
+// PARSERS (INFO LOMBA, LUAR KAMPUS, KOMPETISI CO ID, KOMPETISI ONLINE)
+// ─────────────────────────────────────────────────────────────────────────────
+function parseInfoLombaCompetitions(html: string, query: string): Competition[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const competitions: Competition[] = [];
+  const lowerQuery = query.toLowerCase();
+  const baseUrl = "https://www.infolomba.id";
+
+  $(".event-container").each((_, el) => {
+    const container = $(el);
+    const anchor = container.find(".event-title a").first();
+    const title = anchor.text().trim();
+    if (!title) return;
+
+    let finalUrl = "";
+    const onClickAttr = anchor.attr("onclick")?.trim() || "";
+    const match = onClickAttr.match(/loadDetailsEvent\s*\(\s*(\d+)\s*,\s*['"]([^'"]+)['"]/);
+    if (match && match[1] && match[2]) {
+      finalUrl = `${baseUrl}/info-${match[2]}-${match[1]}`;
+    } else {
+      let href = anchor.attr("href")?.trim() || "";
+      if (href && href !== "#") finalUrl = href.startsWith("http") ? href : `${baseUrl}${href}`;
+    }
+
+    let imageUrl = container.find(".img-container img").first().attr("src")?.trim() || "";
+    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `${baseUrl}/${imageUrl}`;
+
+    const tanggalText = container.find(".tanggal").text().trim();
+    const competition = normalizeCompetition({
+      id: normalizeId(finalUrl, "infolomba"),
+      title,
+      shortDescription: `Info lomba terupdate via InfoLomba.id.`,
+      url: finalUrl,
+      source: "InfoLomba",
+      deadline: tanggalText.split("-").pop()?.trim() || tanggalText,
+      category: guessCategory(title),
+      tags: ["InfoLomba"],
+      isUpcoming: !container.hasClass("event-past"),
+      imageUrl,
+    });
+
+    if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery)) {
+      competitions.push(competition);
+    }
+  });
+  return competitions;
+}
+
+function parseLuarKampusCompetitions(html: string): Competition[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const competitions: Competition[] = [];
+  const baseUrl = "https://luarkampus.id";
+
+  $("a[href*='/events/']").each((_, el) => {
+    const card = $(el);
+    const title = card.find("p.font-bold").text().trim();
+    if (!title) return;
+
+    let href = card.attr("href")?.trim() || "";
+    const detailUrl = href.startsWith("http") ? href : `${baseUrl}${href}`;
+    
+    let rawImg = card.find("img").first().attr("src")?.trim() || "";
+    let imageUrl = rawImg ? (rawImg.startsWith("http") ? rawImg : `${baseUrl}/${rawImg.startsWith("/") ? "" : "/"}${rawImg}`) : "";
+
+    const deadline = card.find("span.text-red-600 b").text().trim() || "TBA";
+
+    competitions.push(normalizeCompetition({
+      id: normalizeId(detailUrl, "luarkampus"),
+      title,
+      shortDescription: `Info event kompetisi mahasiswa dari LuarKampus.`,
+      url: detailUrl,
+      source: "LuarKampus",
+      deadline,
+      category: guessCategory(title),
+      tags: ["LuarKampus"],
+      isUpcoming: true,
+      imageUrl
+    }));
+  });
+  return competitions;
+}
+
+function parseKompetisiCoIdCompetitions(html: string): Competition[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const competitions: Competition[] = [];
+  const baseUrl = "https://kompetisi.co.id";
+
+  $(".group.bg-white").each((_, el) => {
+    const card = $(el);
+    const title = card.find("h3").text().trim();
+    if (!title) return;
+
+    let href = card.find("a[href*='kompetisi?id=']").first().attr("href")?.trim() || "";
+    if (!href) return;
+    const detailUrl = `${baseUrl}/${href}`;
+
+    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
+    if (!imageUrl) {
+      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
+      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
+      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    }
+    if (imageUrl && !imageUrl.startsWith("http")) imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
+
+    competitions.push(normalizeCompetition({
+      id: normalizeId(detailUrl, "kompetisicoid"),
+      title,
+      shortDescription: `Kompetisi Terkurasi oleh Kompetisi.co.id.`,
+      url: detailUrl,
+      source: "Kompetisi.co.id",
+      deadline: "Lihat Jadwal",
+      category: guessCategory(title),
+      tags: ["KompetisiCoId"],
+      isUpcoming: true,
+      imageUrl,
+    }));
+  });
+  return competitions;
+}
+
+function parseKompetisiOnline(html: string, query: string): Competition[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const competitions: Competition[] = [];
+  const lowerQuery = query.toLowerCase();
+  const baseUrl = "https://kompetisionline.com";
+
+  $(".group.bg-white").each((_, el) => {
+    const card = $(el);
+    let title = card.find("h3").text().trim();
+    card.find("h3 span").each((_, spanEl) => {
+      title = title.replace($(spanEl).text(), "").trim();
+    });
+    if (!title) return;
+
+    const anchor = card.find("a[href*='kompetisi?id=']").first();
+    let href = anchor.attr("href")?.trim() || "";
+    if (!href) return; 
+    
+    const detailUrl = href.startsWith("http") ? href : `${baseUrl}/${href.replace(/^\//, "")}`;
+    const id = normalizeId(detailUrl, "kompetisionline");
+
+    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
+    if (!imageUrl) {
+      const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
+      const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
+      if (posterMatch && posterMatch[1]) imageUrl = posterMatch[1];
+    }
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
+    }
+
+    const tags: string[] = [];
+    card.find("span").each((_, badgeEl) => {
+      const tagText = $(badgeEl).text().trim();
+      if (tagText && tagText.length < 20 && !/2026|Penyisihan|Final|Batch/i.test(tagText)) {
+        tags.push(tagText);
+      }
+    });
+
+    let deadlineText = "Lihat di Web";
+    const finalScheduleEl = card.find("div:has(span:contains('Final'))").last();
+    if (finalScheduleEl.length) {
+      deadlineText = finalScheduleEl.find("span").last().text().trim();
+    }
+
+    const competition = normalizeCompetition({
+      id,
+      title,
+      shortDescription: `Info lomba terupdate via KompetisiOnline.com.`,
+      url: detailUrl,
+      source: "KompetisiOnline",
+      deadline: deadlineText, 
+      category: guessCategory(`${title} ${tags.join(" ")}`),
+      tags: tags.length > 0 ? tags : ["KompetisiOnline"],
+      isUpcoming: true,
+      imageUrl,
+    });
+
+    if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery) || tags.some(t => t.toLowerCase().includes(lowerQuery))) {
+      competitions.push(competition);
+    }
+  });
+  return competitions;
+}
+
+async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
+  const normalizedQuery = query.trim();
+  const encodedQuery = encodeURIComponent(normalizedQuery);
+
+  const infolombaUrl = normalizedQuery
+    ? `https://www.infolomba.id/events?sort=Default&title=${encodedQuery}`
+    : "https://www.infolomba.id/events";
+
+  const currentMonth = new Date().getMonth() + 1; 
+  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
+
+  const promises = [
+    fetchHtml(infolombaUrl).then((html) => parseInfoLombaCompetitions(html, normalizedQuery)),
+    fetchHtml("https://kompetisi.co.id/?page=1").then((html) => parseKompetisiCoIdCompetitions(html)),
+    fetchHtml("https://kompetisi.co.id/?page=2").then((html) => parseKompetisiCoIdCompetitions(html)),
+    fetchHtml("https://kompetisionline.com/?page=1").then((html) => parseKompetisiOnline(html, normalizedQuery)),
+    fetchHtml("https://kompetisionline.com/?page=2").then((html) => parseKompetisiOnline(html, normalizedQuery)),
+    fetchHtml(`https://luarkampus.id/events?month=${currentMonth}`).then((html) => parseLuarKampusCompetitions(html)),
+    fetchHtml(`https://luarkampus.id/events?month=${nextMonth}`).then((html) => parseLuarKampusCompetitions(html)),
+  ];
+
+  const results = await Promise.allSettled(promises);
+  const rawCompetitions: Competition[] = [];
+
+  results.forEach((result, idx) => {
+    if (result.status === "fulfilled") {
+      if (idx === 0) {
+        rawCompetitions.push(...result.value);
+      } else {
+        const items = result.value;
+        if (!normalizedQuery) {
+          rawCompetitions.push(...items);
+        } else {
+          const lowerQ = normalizedQuery.toLowerCase();
+          const filteredItems = items.filter(comp => comp.title.toLowerCase().includes(lowerQ));
+          rawCompetitions.push(...filteredItems);
+        }
+      }
+    }
+  });
+
+  const uniqueMap = new Map<string, Competition>();
+  rawCompetitions.forEach(comp => {
+    const titleKey = comp.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
+    if (!uniqueMap.has(titleKey)) uniqueMap.set(titleKey, comp);
+  });
+
+  return Array.from(uniqueMap.values());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLOUDFLARE BROWSER ENGINE (PUSPRESNAS SCRAPER)
 // ─────────────────────────────────────────────────────────────────────────────
 async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competition[]> {
   if (!env.MY_BROWSER) return [];
@@ -75,7 +352,7 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
       const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
       await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       
-      // Jeda render persis yang lu mau
+      // Tunggu client-side js rendering 3 detik persis logic Playwright lu
       await new Promise((r) => setTimeout(r, 3000));
 
       const html = await page.content();
@@ -99,7 +376,7 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
 
         const deadlineText = card.find("span.badge-gray:has(i.fa-calendar-day)").text().trim() || "Lihat Panduan";
 
-        competitions.push({
+        competitions.push(normalizeCompetition({
           id: normalizeId(detailUrl, `puspresnas-${jenjang}`),
           title,
           shortDescription: `Kompetisi Resmi Puspresnas Jenjang ${jenjang.toUpperCase()}.`,
@@ -110,13 +387,12 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
           tags: ["Puspresnas", jenjang.toUpperCase()],
           isUpcoming: true,
           imageUrl
-        });
+        }));
       });
 
-      // Jeda anti-banned
+      // Jeda nafas 4 detik antar-jenjang biar aman
       await new Promise((r) => setTimeout(r, 4000));
-    } catch (e) {
-      // lanjut ke jenjang berikutnya kalau ada satu yang eror
+    } catch {
       continue;
     }
   }
@@ -126,25 +402,39 @@ async function runPuspresnasScraperEngine(env: Env['Bindings']): Promise<Competi
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ENDPOINTS EXECUTION
+// HONO API ENDPOINTS ROUTING
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Endpoint Puspresnas Instan - GAK BAKAL LAG / 503 karena baca dari KV Storage
+// 1. Endpoint Lomba Umum Indonesia (FIX 404)
+app.get("/api/competitions", async (c) => {
+  try {
+    const q = (c.req.query("q") || "").trim();
+    const category = c.req.query("category") || "all";
+
+    let competitions = await fetchFastSourcesOnly(q);
+    if (category !== "all") competitions = competitions.filter((comp) => comp.category === category);
+
+    return c.json(competitions.slice(0, 100)); 
+  } catch {
+    return c.json({ error: "Failed to fetch competitions." }, 500);
+  }
+});
+
+// 2. Endpoint Puspresnas KV (FIX 500)
 app.get("/api/competitions/puspresnas", async (c) => {
   try {
     const q = (c.req.query("q") || "").trim().toLowerCase();
     const category = c.req.query("category") || "all";
 
-    // Ambil data mentah teks dari Cloudflare KV Storage
+    // Mengambil cache permanen dari Cloudflare KV Storage
     const cachedData = await c.env.PUSPRESNAS_KV.get("puspresnas_data");
     
     let competitions: Competition[] = [];
     if (cachedData) {
       competitions = JSON.parse(cachedData);
     } else {
-      // Kasih data tiruan darurat kalau seandainya cron belum berjalan biar gak kosong bgt
       return c.json({ 
-        message: "Sistem sedang mengumpulkan data awal dari pusat prestasi nasional. Silakan refresh 1 menit lagi.", 
+        message: "Data KV kosong. Jalankan /force-scrape terlebih dahulu.", 
         data: [] 
       });
     }
@@ -154,41 +444,46 @@ app.get("/api/competitions/puspresnas", async (c) => {
 
     return c.json(competitions);
   } catch {
-    return c.json({ error: "Failed to read data from storage." }, 500);
+    return c.json({ error: "Failed to read data from storage binding." }, 500);
   }
 });
 
-// Endpoint pemicu manual seandainya lu males nungguin Cron Job otomatis
+// 3. Endpoint Force Scrape Manual untuk Trigger Isi KV Pertama Kali
 app.get("/api/competitions/puspresnas/force-scrape", async (c) => {
   try {
     const data = await runPuspresnasScraperEngine(c.env);
     if (data.length > 0) {
       await c.env.PUSPRESNAS_KV.put("puspresnas_data", JSON.stringify(data));
-      return c.json({ success: true, message: `Berhasil scrape manual ${data.length} data.` });
+      return c.json({ success: true, message: `Berhasil scrape manual ${data.length} data ke KV.` });
     }
-    return c.json({ success: false, message: "Scraper berjalan namun mengembalikan 0 data." }, 400);
+    return c.json({ success: false, message: "Scraper berjalan namun menangkap 0 data." }, 400);
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
 });
 
+// 4. Batch Endpoint
+app.get("/api/competitions/batch", async (c) => {
+  try {
+    const idsStr = (c.req.query("ids") || "").trim();
+    if (!idsStr) return c.json([]);
+    const ids = idsStr.split(",").filter(Boolean);
+
+    const allComps = await fetchFastSourcesOnly("");
+    const filtered = allComps.filter((comp) => ids.includes(comp.id));
+    return c.json(filtered);
+  } catch {
+    return c.json({ error: "Failed to fetch batch." }, 500);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
-// CRON TRIGGER HANDLER (MENGGANTIKAN APP.LISTEN STARTUP EXPRESS)
+// CLOUDFLARE WORKERS EXPORT (CRON TRIGGER + FETCH INJECTION)
 // ─────────────────────────────────────────────────────────────────────────────
 export default {
-  fetch: app.fetch, // Jalur request API biasa
+  fetch: app.fetch, // Handle Request API Hono biasa
   
-  async Tracy(event: any, env: Env['Bindings'], ctx: ExecutionContext) {
-    // Dipicu otomatis tiap sejam sekali oleh cloudflare system background scheduler
-    ctx.waitUntil(
-      runPuspresnasScraperEngine(env).then(async (data) => {
-        if (data && data.length > 0) {
-          await env.PUSPRESNAS_KV.put("puspresnas_data", JSON.stringify(data));
-        }
-      })
-    );
-  },
-  // Fallback untuk kompabilitas scheduler syntax baru
+  // Otomatis berjalan setiap jam di background untuk memperbarui isi KV tanpa mengganggu user
   async scheduled(event: any, env: Env['Bindings'], ctx: ExecutionContext) {
     ctx.waitUntil(
       runPuspresnasScraperEngine(env).then(async (data) => {
