@@ -1,7 +1,5 @@
 import express from "express";
-import path from "path";
 import * as cheerio from "cheerio";
-import { createServer as createViteServer } from "vite";
 import axios from "axios";
 import { chromium } from "playwright"; 
 import cors from "cors";
@@ -23,7 +21,6 @@ interface Competition {
   imageUrl: string; 
 }
 
-// Wadah penyimpanan data Puspresnas di RAM biar cukup di-parse sekali pas startup
 const GLOBAL_CACHE = {
   puspresnas: [] as Competition[],
   isPuspresnasReady: false
@@ -101,7 +98,7 @@ async function fetchHtml(url: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Robust Puspresnas RAM Cache Warmup (Cukup Sekali Eksekusi)
+// Robust Puspresnas Cache Warmup (Cloudflare Browser Rendering Native)
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function warmUpPuspresnasCache(env: any): Promise<void> {
@@ -110,23 +107,18 @@ async function warmUpPuspresnasCache(env: any): Promise<void> {
   console.log("[Cache] Memulai Puspresnas via Cloudflare Browser Rendering...");
 
   try {
-    // PANGGIL CHROMIUM BAWAAN CLOUDFLARE VIA BINDING
     browser = await (chromium as any).connectWithBrowser(env.MY_BROWSER);    
-    
     const context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ...",
       viewport: { width: 1280, height: 720 }
     });
-    
     const page = await context.newPage();
 
     for (const jenjang of PUSPRESNAS_JENJANGS) {
       const targetUrl = `https://pusatprestasinasional.kemendikdasmen.go.id/jenjang/${jenjang}`;
       try {
         console.log(`[Cache] Scrape jenjang: ${jenjang.toUpperCase()}...`);
-        
         await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await page.waitForTimeout(3000); // Jeda render client-side
+        await page.waitForTimeout(3000);
 
         const html = await page.content();
         const $ = cheerio.load(html);
@@ -163,13 +155,11 @@ async function warmUpPuspresnasCache(env: any): Promise<void> {
             isUpcoming: true,
             imageUrl
           }));
-          
           countPerJenjang++;
         });
 
         console.log(`[Cache Success] Berhasil ambil ${countPerJenjang} lomba dari ${jenjang.toUpperCase()}`);
         await delay(2000);
-
       } catch (e: any) {
         console.error(`[Cache Error] Gagal di jenjang ${jenjang}: ${e.message}`);
         continue;
@@ -185,8 +175,9 @@ async function warmUpPuspresnasCache(env: any): Promise<void> {
     if (browser) await browser.close();
   }
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
-// HTML Parsers (Murni Parse Sesuai Struktur Asli Web)
+// HTML Parsers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseInfoLombaCompetitions(html: string, query: string): Competition[] {
@@ -252,7 +243,6 @@ function parseLuarKampusCompetitions(html: string): Competition[] {
     
     let rawImg = card.find("img").first().attr("src")?.trim() || "";
     let imageUrl = rawImg ? (rawImg.startsWith("http") ? rawImg : `${baseUrl}/${rawImg.startsWith("/") ? "" : "/"}${rawImg}`) : "";
-
     const deadline = card.find("span.text-red-600 b").text().trim() || "TBA";
 
     competitions.push(normalizeCompetition({
@@ -279,17 +269,13 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
 
   $(".group.bg-white").each((_, el) => {
     const card = $(el);
-    let title = card.find("h3").text().trim();
+    let title = card.find("h3").text().trim().replace(/\s+/g, " ");
     if (!title) return;
-
-    // Bersihkan spasi ganda atau tab bawaan HTML pada judul
-    title = title.replace(/\s+/g, " ");
 
     let href = card.find("a[href*='kompetisi?id=']").first().attr("href")?.trim() || "";
     if (!href) return;
     const detailUrl = `${baseUrl}/${href.replace(/^\//, "")}`;
 
-    // ─── AMBIL POSTER DARI TOMBOL OPENPOSTER ───
     let imageUrl = "";
     const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
     const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
@@ -297,16 +283,13 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
     if (posterMatch && posterMatch[1]) {
       imageUrl = posterMatch[1].trim();
     } else {
-      // Fallback ke gambar logo kecil di bagian atas jika tombol poster tidak terbaca
       imageUrl = card.find("img").first().attr("src")?.trim() || "";
     }
 
-    // Ubah path relatif menjadi link gambar absolut yang bisa dibuka di frontend
     if (imageUrl && !imageUrl.startsWith("http")) {
       imageUrl = `${baseUrl}/${imageUrl.replace(/^\//, "")}`;
     }
 
-    // Ambil Deadline dari baris jadwal final di HTML
     let deadlineText = "Lihat Jadwal";
     const finalRow = card.find("div:has(span:contains('Final'))").last();
     if (finalRow.length) {
@@ -323,7 +306,7 @@ function parseKompetisiCoIdCompetitions(html: string): Competition[] {
       category: guessCategory(title),
       tags: ["KompetisiCoId"],
       isUpcoming: true,
-      imageUrl, // Sekarang berisi link poster utama berukuran besar!
+      imageUrl,
     }));
   });
   return competitions;
@@ -338,14 +321,11 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
 
   $(".group.bg-white").each((_, el) => {
     const card = $(el);
-    
     let title = card.find("h3").text().trim();
     card.find("h3 span").each((_, spanEl) => {
-      const spanText = $(spanEl).text();
-      title = title.replace(spanText, "").trim();
+      title = title.replace($(spanEl).text(), "").trim();
     });
     title = title.replace(/\s+/g, " ");
-    
     if (!title) return;
 
     const anchor = card.find("a[href*='kompetisi?id=']").first();
@@ -355,7 +335,6 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
     const detailUrl = href.startsWith("http") ? href : `${baseUrl}/${href.replace(/^\//, "")}`;
     const id = normalizeId(detailUrl, "kompetisionline");
 
-    // ─── AMBIL POSTER DARI TOMBOL OPENPOSTER ───
     let imageUrl = "";
     const posterButtonOnclick = card.find("button[onclick*='openPoster']").attr("onclick") || "";
     const posterMatch = posterButtonOnclick.match(/openPoster\s*\(\s*['"]([^'"]+)['"]/);
@@ -394,7 +373,7 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
       category: guessCategory(`${title} ${tags.join(" ")}`),
       tags: tags.length > 0 ? tags : ["KompetisiOnline"],
       isUpcoming: true,
-      imageUrl, // Link poster aman terkendali!
+      imageUrl,
     });
 
     if (!lowerQuery || competition.title.toLowerCase().includes(lowerQuery) || tags.some(t => t.toLowerCase().includes(lowerQuery))) {
@@ -405,14 +384,12 @@ function parseKompetisiOnline(html: string, query: string): Competition[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Orchestrator (InfoLomba Live Search + Sisa Web Ambil Utama & Filter RAM)
+// Orchestrator
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
   const normalizedQuery = query.trim();
   const encodedQuery = encodeURIComponent(normalizedQuery);
-
-  // InfoLomba ditembak langsung lewat query parameter bawaan webnya
   const infolombaUrl = normalizedQuery
     ? `https://www.infolomba.id/events?sort=Default&title=${encodedQuery}`
     : "https://www.infolomba.id/events";
@@ -420,7 +397,6 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
   const currentMonth = new Date().getMonth() + 1; 
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
 
-  // Web selain InfoLomba ditembak murni halaman utamanya (lengkap tanpa error query)
   const promises = [
     fetchHtml(infolombaUrl).then((html) => parseInfoLombaCompetitions(html, normalizedQuery)),
     fetchHtml("https://kompetisi.co.id/?page=1").then((html) => parseKompetisiCoIdCompetitions(html)),
@@ -437,23 +413,19 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
   results.forEach((result, idx) => {
     if (result.status === "fulfilled") {
       if (idx === 0) {
-        // InfoLomba (sudah bersih karena disaring dari server infolomba langsung)
         rawCompetitions.push(...result.value);
       } else {
-        // Sisa Web statis disaring manual lewat judul di memori RAM backend
         const items = result.value;
         if (!normalizedQuery) {
           rawCompetitions.push(...items);
         } else {
           const lowerQ = normalizedQuery.toLowerCase();
-          const filteredItems = items.filter(comp => comp.title.toLowerCase().includes(lowerQ));
-          rawCompetitions.push(...filteredItems);
+          rawCompetitions.push(...items.filter(comp => comp.title.toLowerCase().includes(lowerQ)));
         }
       }
     }
   });
 
-  // Pembersihan duplikasi data kembar berdasarkan manipulasi kemiripan judul
   const uniqueMap = new Map<string, Competition>();
   rawCompetitions.forEach(comp => {
     const titleKey = comp.title.toLowerCase().trim().replace(/[\W_]+/g, "-");
@@ -464,98 +436,114 @@ async function fetchFastSourcesOnly(query: string): Promise<Competition[]> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Express Server & Endpoints Execution
+// Express Setup & API Integration
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function startServer() {
-  const app = express();
-  const PORT = process.env.PORT || 3000;  
-  app.use(express.json());
-  app.use((req: any, res, next) => {
-    // Cloudflare Pages melekatkan context di req.cf atau req.env tergantung adapter
-    req.env = req.env || (req as any).context?.env;
-    next();
-  });
-  app.use(cors()); // <-- Aktifkan CORS tepat di bawah express.json()
-  // 1. ENDPOINT KILAT LOMBA LOKAL INDONESIA
-  app.get("/api/competitions", async (req, res) => {
-    try {
-      const q = (req.query.q as string || "").trim();
-      const category = (req.query.category as string) || "all";
+const app = express();
+app.use(express.json());
+app.use(cors());
 
-      let competitions = await fetchFastSourcesOnly(q);
-      if (category !== "all") competitions = competitions.filter((c) => c.category === category);
+// Middleware penangkap Cloudflare runtime environment
+app.use((req: any, res, next) => {
+  req.env = req.env || (req as any).context?.env;
+  next();
+});
 
-      res.json(competitions.slice(0, 100)); 
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch competitions." });
-    }
-  });
-
-  // 2. ENDPOINT PUSPRESNAS INSTAN (Bebas Lag karena memotong data RAM Cache)
-app.get("/api/competitions/puspresnas", async (req: any, res) => {
-    try {
-      const q = (req.query.q as string || "").trim().toLowerCase();
-      const category = (req.query.category as string) || "all";
-
-      // Ambil objek context/env asli milik Cloudflare
-      const cfContext = (req as any).context; 
-      const cloudflareEnv = req.env || cfContext?.env || (globalThis as any).process?.env;
-
-      // JALANKAN WARMUP JIKA RAM CACHE MASIH KOSONG
-      if (!GLOBAL_CACHE.isPuspresnasReady) {
-        if (cloudflareEnv && cloudflareEnv.MY_BROWSER) {
-          console.log("[Cloudflare] Memicu background scrape karena cache kosong...");
-          
-          // KUNCI: Jika di produksi Cloudflare, gunakan waitUntil agar fungsi tidak dibunuh saat res.json dikirim
-          if (cfContext && typeof cfContext.waitUntil === "function") {
-            cfContext.waitUntil(warmUpPuspresnasCache(cloudflareEnv));
-          } else {
-            // Fallback jika ditesting di localhost biasa
-            warmUpPuspresnasCache(cloudflareEnv);
-          }
-        } else {
-          console.error("[Error] Binding MY_BROWSER tidak ditemukan di Environment!");
-        }
-      }
-
-      // Berikan data yang ada sekarang (kosong di request pertama, terisi penuh di request selanjutnya)
-      let competitions = [...GLOBAL_CACHE.puspresnas];
-      if (q) competitions = competitions.filter((c) => c.title.toLowerCase().includes(q));
-      if (category !== "all") competitions = competitions.filter((c) => c.category === category);
-
-      res.json(competitions);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch Puspresnas data." });
-    }
-  });
-  // 3. BATCH ENDPOINT
-  app.get("/api/competitions/batch", async (req, res) => {
-    try {
-      const idsStr = (req.query.ids as string || "").trim();
-      if (!idsStr) return res.json([]);
-      const ids = idsStr.split(",").filter(Boolean);
-
-      const allComps = await fetchFastSourcesOnly("");
-      const filtered = allComps.filter((c) => ids.includes(c.id));
-      res.json(filtered);
-    } catch (error) {
-      res.status(500).json({ error: "Failed to fetch batch." });
-    }
-  });
-
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
+// 1. ENDPOINT KILAT LOMBA LOKAL INDONESIA
+app.get("/api/competitions", async (req, res) => {
+  try {
+    const q = (req.query.q as string || "").trim();
+    const category = (req.query.category as string) || "all";
+    let competitions = await fetchFastSourcesOnly(q);
+    if (category !== "all") competitions = competitions.filter((c) => c.category === category);
+    res.json(competitions.slice(0, 100)); 
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch competitions." });
   }
+});
 
-  app.listen(Number(PORT), "0.0.0.0", () => {
-    console.log(`Scraper Backend running on port ${PORT}`);
-  });
-}
+// 2. ENDPOINT PUSPRESNAS NATIVE EDGE CACHE WARMUP
+app.get("/api/competitions/puspresnas", async (req: any, res) => {
+  try {
+    const q = (req.query.q as string || "").trim().toLowerCase();
+    const category = (req.query.category as string) || "all";
+    const cfContext = (req as any).context; 
+    const cloudflareEnv = req.env || cfContext?.env;
 
-startServer();
+    if (!GLOBAL_CACHE.isPuspresnasReady && cloudflareEnv?.MY_BROWSER) {
+      if (cfContext && typeof cfContext.waitUntil === "function") {
+        cfContext.waitUntil(warmUpPuspresnasCache(cloudflareEnv));
+      } else {
+        warmUpPuspresnasCache(cloudflareEnv);
+      }
+    }
+
+    let competitions = [...GLOBAL_CACHE.puspresnas];
+    if (q) competitions = competitions.filter((c) => c.title.toLowerCase().includes(q));
+    if (category !== "all") competitions = competitions.filter((c) => c.category === category);
+    res.json(competitions);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch Puspresnas data." });
+  }
+});
+
+// 3. BATCH ENDPOINT
+app.get("/api/competitions/batch", async (req, res) => {
+  try {
+    const idsStr = (req.query.ids as string || "").trim();
+    if (!idsStr) return res.json([]);
+    const ids = idsStr.split(",").filter(Boolean);
+    const allComps = await fetchFastSourcesOnly("");
+    res.json(allComps.filter((c) => ids.includes(c.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch batch." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cloudflare Functions Adapter Framework Export (PENGGANTI APP.LISTEN)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export default {
+  async fetch(request: Request, env: any, ctx: any) {
+    // Membangun ulang siklus request Express manual agar dimengerti Cloudflare Pages
+    return new Promise<Response>((resolve) => {
+      const url = new URL(request.url);
+      
+      // Inject data context Cloudflare ke dalam mock request Express
+      const reqMock: any = {
+        method: request.method,
+        url: url.pathname + url.search,
+        headers: Object.fromEntries(request.headers.entries()),
+        env: env,
+        context: ctx,
+        query: Object.fromEntries(url.searchParams.entries())
+      };
+
+      // Handler penampung response kiriman Express
+      const resMock: any = {
+        statusCode: 200,
+        headers: {},
+        setHeader(name: string, value: string) { this.headers[name.toLowerCase()] = value; },
+        getHeader(name: string) { return this.headers[name.toLowerCase()]; },
+        status(code: number) { this.statusCode = code; return this; },
+        json(data: any) {
+          this.setHeader("content-type", "application/json");
+          resolve(new Response(JSON.stringify(data), {
+            status: this.statusCode,
+            headers: this.headers
+          }));
+        },
+        send(data: any) {
+          resolve(new Response(data, {
+            status: this.statusCode,
+            headers: this.headers
+          }));
+        }
+      };
+
+      // Alirkan data objek request ke router Express
+      app(reqMock, resMock);
+    });
+  }
+};
