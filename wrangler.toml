@@ -6,5 +6,4 @@ pages_build_output_dir = "dist" # Folder hasil build frontend kamu (biasanya dis
 [browser]
 binding = "MY_BROWSER"
 
-[compatibility_flags]
-# Memastikan fitur-fitur modern seperti runtime Async/Wait dan Fetch di Edge berjalan mulus
+compatibility_flags = [ "nodejs_compat" ]
