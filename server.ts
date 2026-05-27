@@ -59,72 +59,62 @@ async function fetchHtml(url: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PARSERS
+// PARSERS & FETCHERS
 // ─────────────────────────────────────────────────────────────────────────────
-function parsePuspresnasSma(html: string): any[] {
-  if (!html) return [];
-  const $ = cheerio.load(html);
-  const competitions: any[] = [];
 
-  // Cari berdasarkan kontainer .card bawaan Svelte
-  $(".card").each((_, el) => {
-    const card = $(el);
-    
-    // Cari tag h2 terdekat di dalam card sebagai Judul Lomba
-    const title = card.find("h2").first().text().trim();
-    if (!title) return;
-
-    // Filter Longgar: Memastikan OSN, OPSI, LDI, LKSN, FLS3N, O2SN lolos sensor
-    if (!/osn|opsi|ld|fiksi|nsdc|o2sn|fls|lks|olimpiade|debat|festival|siswa|kompetisi/i.test(title)) return;
-
-    // Ambil URL detail tombol "Info Lebih Lanjut" secara dinamis berdasarkan teks tombol
-    let detailUrl = card.find("a").filter((_, aEl) => $(aEl).text().includes("Info")).attr("href")?.trim() || "";
-    if (!detailUrl) {
-      detailUrl = card.find("a").first().attr("href")?.trim() || "";
-    }
-    
-    // Normalisasi URL jika berupa path relatif
-    if (detailUrl && !detailUrl.startsWith("http")) {
-      detailUrl = `https://sma-pusatprestasinasional.kemendikdasmen.go.id${detailUrl.startsWith("/") ? "" : "/"}${detailUrl}`;
-    }
-
-    // Ambil Image Poster
-    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
-    if (imageUrl && !imageUrl.startsWith("http")) {
-      imageUrl = `https://sma-pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
-    }
-
-    // Ambil Tanggal Pendaftaran & Status Sisa Hari
-    let deadlineText = "Lihat Portal";
-    const value = card.find(".value").first().text().trim();
-    const remaining = card.find(".remaining").first().text().trim();
-    
-    if (value) {
-      deadlineText = remaining ? `${value} (${remaining})` : value;
-    } else {
-      const pendaftaranBox = card.find(":contains('Pendaftaran')").last();
-      if (pendaftaranBox.length) {
-        deadlineText = pendaftaranBox.text().replace("Pendaftaran", "").replace(/\s+/g, " ").trim();
-      }
-    }
-
-    const isPast = deadlineText.toLowerCase().includes("sudah ditutup") || deadlineText.toLowerCase().includes("tutup");
-
-    competitions.push({
-      id: normalizeId(detailUrl || title, "puspresnas-sma"),
-      title,
-      shortDescription: card.find(".description, p").first().text().trim() || `Ajang Talenta Resmi Tingkat Nasional (Puspresnas).`,
-      url: detailUrl || "https://sma-pusatprestasinasional.kemendikdasmen.go.id/",
-      source: "Puspresnas SMA",
-      deadline: deadlineText,
-      category: guessCategory(title),
-      tags: ["Puspresnas", "Official", "SMA"],
-      isUpcoming: !isPast, 
-      imageUrl
+// Parser API Internal BPTI Puspresnas (JSON Murni)
+async function fetchPuspresnasSmaJson(): Promise<any[]> {
+  try {
+    const response = await axios.get("https://daftar-bpti.kemendikdasmen.go.id/api/ajang?year=2026", {
+      headers: DEFAULT_HEADERS,
+      timeout: 7000
     });
-  });
 
-  return competitions;
+    const result = response.data;
+    if (result.status !== "success" || !Array.isArray(result.data)) return [];
+
+    return result.data.map((item: any) => {
+      const title = item.name || "Ajang Talenta Resmi";
+      const detailUrl = item.link || item.useful_links || "https://pusatprestasinasional.kemendikdasmen.go.id/";
+      
+      const rawImg = item.logo || "";
+      const imageUrl = rawImg.startsWith("http") 
+        ? rawImg 
+        : `https://daftar-bpti.kemendikdasmen.go.id/uploads/${rawImg.replace(/^\//, "")}`;
+
+      let deadlineText = "Lihat Portal";
+      if (item.open && item.close) {
+        const openDate = item.open.split(" ")[0];
+        const closeDate = item.close.split(" ")[0];
+        deadlineText = `${openDate} s/d ${closeDate}`;
+      }
+
+      let isPast = false;
+      if (item.close) {
+        const closeTime = new Date(item.close).getTime();
+        const now = new Date().getTime();
+        isPast = now > closeTime;
+      }
+
+      return {
+        id: normalizeId(detailUrl || title, "puspresnas-sma"),
+        title,
+        shortDescription: item.description && item.description !== "-" 
+          ? item.description 
+          : `Ajang Talenta Resmi Tingkat Nasional (BPTI / Puspresnas) Tahun ${item.year || 2026}.`,
+        url: detailUrl,
+        source: "Puspresnas",
+        deadline: isPast ? `${deadlineText} (Sudah ditutup)` : deadlineText,
+        category: guessCategory(title),
+        tags: ["Puspresnas", "Official", item.code || "BPTI"],
+        isUpcoming: !isPast,
+        imageUrl
+      };
+    });
+  } catch (error) {
+    console.error("Gagal mengambil API internal BPTI Puspresnas:", error);
+    return [];
+  }
 }
 
 function parseInfoLomba(html: string, query: string): any[] {
@@ -321,8 +311,7 @@ app.get('/api/competitions', async (c) => {
 
   try {
     const targets = [
-      // URL Target Puspresnas Baru 2026 yang menggunakan strip (-)
-      fetchHtml("https://sma-pusatprestasinasional.kemendikdasmen.go.id/").then(h => parsePuspresnasSma(h)), 
+      fetchPuspresnasSmaJson(), // Menggunakan API BPTI Internal secara langsung
       fetchHtml(infolombaUrl).then(h => parseInfoLomba(h, query)),
       fetchHtml("https://kompetisi.co.id/?page=1").then(h => parseKompetisiCoId(h)),
       fetchHtml("https://kompetisi.co.id/?page=2").then(h => parseKompetisiCoId(h)),
@@ -377,6 +366,6 @@ app.get('/api/competitions', async (c) => {
   }
 })
 
-app.get("/", (c) => c.text("Nantangin Hybrid API (with Puspresnas SMA) is running perfectly! 🚀"));
+app.get("/", (c) => c.text("Nantangin Hybrid API (with Puspresnas SMA API) is running perfectly! 🚀"));
 
 export default app
