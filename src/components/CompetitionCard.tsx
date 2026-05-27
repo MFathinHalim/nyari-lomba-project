@@ -91,7 +91,7 @@ export function CompetitionCard({ competition, onShare, isSaved = false, onSave 
               src={competition.imageUrl} 
               alt={competition.title}
               loading="lazy"
-              className={`w-full h-full ${competition.source.includes("Puspresnas") ? "object-contain" : "object-cover"} transition-all duration-300 scale-100 group-hover:scale-105`}
+              className={`w-full h-full bg-white ${competition.source.includes("Puspresnas") ? "object-contain" : "object-cover"} transition-all duration-300 scale-100 group-hover:scale-105`}
               onError={(e) => {
                 (e.target as HTMLElement).style.display = 'none';
               }}
