@@ -86,7 +86,7 @@ export function CompetitionCard({ competition, onShare, isSaved = false, onSave 
 
         {/* Poster Lomba */}
         {competition.imageUrl && (
-          <div className={`mb-4 border-2 ${competition.source.includes("Puspresnas") ? "rounded-full max-h-80 max-w-80" : "aspect-[3/4] w-full"} border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow group-hover:border-white`}>
+          <div className={`mb-4 border-2 ${competition.source.includes("Puspresnas SMA") ? "rounded-full max-h-80 max-w-80" : "aspect-[3/4] w-full"} border-zinc-900 overflow-hidden bg-zinc-100 transition-shadow group-hover:border-white`}>
             <img 
               src={competition.imageUrl} 
               alt={competition.title}

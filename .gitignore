@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+server.js
+server.js.map
+.wrangler/

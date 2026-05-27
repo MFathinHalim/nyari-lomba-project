@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react"; 
 import { Link } from "react-router-dom";
-import { Loader2, Info, Volume2, VolumeX, User, ChevronLeft, ChevronRight, Trophy, Flame, Sparkles, CheckCircle } from "lucide-react";
+import { Loader2, Info, Volume2, VolumeX, User, ChevronLeft, ChevronRight, Trophy, Flame, Sparkles } from "lucide-react";
 import { CompetitionCard } from "../components/CompetitionCard";
 import { Competition } from "../types";
 import { auth, logInWithGoogle, logOut, subscribeToUserDoc, toggleSaveCompetition } from "../lib/firebase"; 
@@ -9,8 +9,6 @@ import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 export default function Home() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [loading, setLoading] = useState(false);
-  const [puspresnasLoading, setPuspresnasLoading] = useState(false); 
-  const [puspresnasNotice, setPuspresnasNotice] = useState(""); // State baru untuk notifikasi dinamik
   const [error, setError] = useState("");
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -126,73 +124,40 @@ export default function Home() {
     return isNaN(fallback) ? Infinity : fallback;
   };
 
-  // LOGIKA AMBIL DATA: Cepat dulu keluar, lambat ngebuntut di ekor daftar lomba
-  // LOGIKA AMBIL DATA: Mengalir lancar tanpa mematikan state loading prematur
-async function fetchAllDataStream() {
-  setLoading(true);
-  setError("");
-  setPuspresnasNotice("");
-  const BASE_URL = "https://nantangin.fathincoding.workers.dev";
-  const fastUrl = new URL(`${BASE_URL}/api/competitions`, window.location.href);
-  const puspresnasUrl = new URL(`${BASE_URL}/api/competitions/puspresnas`, window.location.href);
+  // AMBIL DATA SEKALIGUS: Puspresnas sudah melebur di dalam satu endpoint utama backend
+  async function fetchAllData() {
+    setLoading(true);
+    setError("");
+    const BASE_URL = "https://nantangin.fathincoding.workers.dev";
+    const targetUrl = new URL(`${BASE_URL}/api/competitions`, window.location.href);
 
-  if (searchQuery.trim()) {
-    fastUrl.searchParams.append("q", searchQuery);
-    puspresnasUrl.searchParams.append("q", searchQuery);
-  }
-  if (category !== "all") {
-    fastUrl.searchParams.append("category", category);
-    puspresnasUrl.searchParams.append("category", category);
-  }
-
-  // Step 1: Ambil data 4 web utama secara instan
-  try {
-    const res = await fetch(fastUrl);
-    if (!res.ok) throw new Error("Gagal memuat kompetisi standar.");
-    const fastData = await res.json();
-    setCompetitions(fastData); 
-  } catch (err: any) {
-    setError(err.message || "Terjadi kesalahan.");
-  }
-  // JANGAN matikan setLoading(false) di sini agar engine React tidak bingung dengan siklus render data background
-
-  // Step 2: Ambil data lambat Puspresnas di background, nyalakan banner-nya!
-  setPuspresnasLoading(true);
-  setPuspresnasNotice("Menyelaraskan dengan pangkalan data Puspresnas... Mohon tunggu.");
-  
-  try {
-    const pRes = await fetch(puspresnasUrl);
-    if (pRes.ok) {
-      const puspresnasData = await pRes.json();
-      if (puspresnasData.length > 0) {
-        // Menggabungkan data Puspresnas di baris AKHIR (tail) array
-        setCompetitions(prev => [...prev, ...puspresnasData]);
-        setPuspresnasNotice(`Berhasil menyisipkan ${puspresnasData.length} ajang resmi Puspresnas!`);
-      } else {
-        setPuspresnasNotice("");
-      }
+    if (searchQuery.trim()) {
+      targetUrl.searchParams.append("q", searchQuery);
     }
-  } catch (pErr) {
-    console.error("Gagal memuat data latar belakang Puspresnas:", pErr);
-    setPuspresnasNotice("Koneksi Puspresnas terputus.");
-  } finally {
-    // Matikan seluruh status loading secara bersamaan di akhir siklus stream data
-    setPuspresnasLoading(false);
-    setLoading(false); 
-    
-    // Bersihkan notifikasi sukses setelah banner selesai dibaca dalam 4 detik
-    setTimeout(() => setPuspresnasNotice(""), 4000);
+    if (category !== "all") {
+      targetUrl.searchParams.append("category", category);
+    }
+
+    try {
+      const res = await fetch(targetUrl);
+      if (!res.ok) throw new Error("Gagal memuat kompetisi dari server.");
+      const data = await res.json();
+      setCompetitions(data); 
+    } catch (err: any) {
+      setError(err.message || "Terjadi kesalahan saat memuat data.");
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
   useEffect(() => {
-    fetchAllDataStream();
+    fetchAllData();
   }, []);
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setCurrentPage(1); 
-    fetchAllDataStream();
+    fetchAllData();
   };
 
   useEffect(() => {
@@ -322,22 +287,10 @@ async function fetchAllDataStream() {
                 </div>
                 <div className="col-span-2 border-2 border-zinc-900 bg-[#00e5ff] p-3 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex items-center gap-3">
                   <Sparkles className="w-6 h-6 shrink-0 animate-spin [animation-duration:6s]" />
-                  <span className="text-xs font-black uppercase tracking-tight">data dari 4 website berbeda</span>
+                  <span className="text-xs font-black uppercase tracking-tight">Data Agregasi Kompetisi Terintegrasi</span>
                 </div>
               </div>
             </div>
-
-            {/* INTERACTIVE NOTIFICATION FLOATING BANNER (Neo-brutalist Style) */}
-            {puspresnasNotice && (
-              <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-[#7c3aed] text-white border-2 border-zinc-900 px-5 py-4 font-black text-xs uppercase tracking-wider shadow-[5px_5px_0px_0px_#000] rounded-none animate-bounce max-w-sm sm:max-w-md">
-                {puspresnasLoading ? (
-                  <Loader2 className="w-5 h-5 animate-spin text-[#00e5ff] shrink-0" />
-                ) : (
-                  <CheckCircle className="w-5 h-5 text-[#a3e635] shrink-0" />
-                )}
-                <p className="leading-tight">{puspresnasNotice}</p>
-              </div>
-            )}
 
             {/* Form Pencarian */}
             <form onSubmit={handleSearch} className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center mt-6 mb-10">
@@ -382,7 +335,7 @@ async function fetchAllDataStream() {
             {loading && (
               <div className="w-full bg-zinc-900 text-white border-2 border-zinc-900 p-4 mb-10 flex items-center justify-center gap-3 font-black text-sm uppercase tracking-widest shadow-[4px_4px_0px_0px_#ffce00]">
                 <Loader2 className="w-5 h-5 animate-spin text-[#ffce00]" /> 
-                Menyisir Event Kompetisi...
+                Menyisir Seluruh Event Kompetisi...
               </div>
             )}
 

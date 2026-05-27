@@ -15,12 +15,12 @@ app.use('/api/*', cors({
 // HELPERS & CONFIGURATIONS
 // ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi", "fiksi"],
-  Arts: ["design", "art", "creative", "illustration", "visual", "film", "festival", "movie", "video", "sinematografi", "foto", "photography", "poster", "lukis", "gambar", "musik", "lagu", "seni", "olahraga", "o2sn", "fls2n"],
-  Science: ["science", "tech", "technology", "research", "innovation", "sains", "matematika", "fisika", "biologi", "kimia", "olimpiade", "riset", "karya tulis", "kti", "osn", "opsi"],
+  Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi", "fiksi", "kewirausahaan"],
+  Arts: ["design", "art", "creative", "illustration", "visual", "film", "festival", "movie", "video", "sinematografi", "foto", "photography", "poster", "lukis", "gambar", "musik", "lagu", "seni", "olahraga", "o2sn", "fls2n", "fls3n", "sastra"],
+  Science: ["science", "tech", "technology", "research", "innovation", "sains", "matematika", "fisika", "biologi", "kimia", "olimpiade", "riset", "karya tulis", "kti", "osn", "opsi", "penelitian"],
   "E-Sports": ["esports", "gaming", "valorant", "mlbb", "mobile legends", "game", "turnamen", "tournament", "pubg"],
-  Writing: ["writing", "cerpen", "essay", "story", "literature", "poetry", "menulis", "esai", "puisi", "sastra", "novel"],
-  IT: ["hackathon", "software", "developer", "web", "app", "blockchain", "programming", "coding", "ui/ux", "cyber", "data science", "ai", "cloud"],
+  Writing: ["writing", "cerpen", "essay", "story", "literature", "poetry", "menulis", "esai", "puisi", "novel"],
+  IT: ["hackathon", "software", "developer", "web", "app", "blockchain", "programming", "coding", "ui/ux", "cyber", "data science", "ai", "cloud", "lks", "lksn"],
 };
 
 function guessCategory(raw: string): string {
@@ -66,52 +66,60 @@ function parsePuspresnasSma(html: string): any[] {
   const $ = cheerio.load(html);
   const competitions: any[] = [];
 
-  // 1. Target langsung kontainer .card bawaan Svelte-nya
+  // Cari berdasarkan kontainer .card bawaan Svelte
   $(".card").each((_, el) => {
     const card = $(el);
     
-    // 2. Ambil judul dari tag h2 di dalam card-content
-    const title = card.find(".card-content h2").text().trim();
+    // Cari tag h2 terdekat di dalam card sebagai Judul Lomba
+    const title = card.find("h2").first().text().trim();
     if (!title) return;
 
-    // Filter biar murni dapet ajang resmi talenta aja
-    if (!/osn|opsi|ldi|ldbi|fiksi|nsdc|o2sn|fls2n|olimpiade|debat|talenta/i.test(title)) return;
+    // Filter Longgar: Memastikan OSN, OPSI, LDI, LKSN, FLS3N, O2SN lolos sensor
+    if (!/osn|opsi|ld|fiksi|nsdc|o2sn|fls|lks|olimpiade|debat|festival|siswa|kompetisi/i.test(title)) return;
 
-    // 3. Ambil URL Detail dari tombol "Info Lebih Lanjut"
-    let detailUrl = card.find(".links a").attr("href")?.trim() || "";
+    // Ambil URL detail tombol "Info Lebih Lanjut" secara dinamis berdasarkan teks tombol
+    let detailUrl = card.find("a").filter((_, aEl) => $(aEl).text().includes("Info")).attr("href")?.trim() || "";
     if (!detailUrl) {
-      // Fallback kalau tombolnya gak ketemu, pakai link apa aja yang ada di card
-      detailUrl = card.find("a").attr("href")?.trim() || "https://sma.pusatprestasinasional.kemdikbud.go.id/";
+      detailUrl = card.find("a").first().attr("href")?.trim() || "";
+    }
+    
+    // Normalisasi URL jika berupa path relatif
+    if (detailUrl && !detailUrl.startsWith("http")) {
+      detailUrl = `https://sma-pusatprestasinasional.kemendikdasmen.go.id${detailUrl.startsWith("/") ? "" : "/"}${detailUrl}`;
     }
 
-    // 4. Ambil Image/Poster src
-    let imageUrl = card.find(".card-image img").attr("src")?.trim() || "";
+    // Ambil Image Poster
+    let imageUrl = card.find("img").first().attr("src")?.trim() || "";
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `https://sma-pusatprestasinasional.kemendikdasmen.go.id/${imageUrl.replace(/^\//, "")}`;
+    }
 
-    // 5. Ekstrak Tanggal Pendaftaran
-    // Mengambil teks dari date-item pertama (Pendaftaran: 16 Feb 2026 - 31 Mar 2026 Sudah ditutup)
-    const pendaftaranEl = card.find(".dates .date-item").first();
+    // Ambil Tanggal Pendaftaran & Status Sisa Hari
     let deadlineText = "Lihat Portal";
-    if (pendaftaranEl.length) {
-      const label = pendaftaranEl.find(".label").text().trim(); // "Pendaftaran"
-      const value = pendaftaranEl.find(".value").text().trim(); // "16 Feb 2026 - 31 Mar 2026"
-      const remaining = pendaftaranEl.find(".remaining").text().trim(); // "Sudah ditutup"
-      
-      deadlineText = `${value} (${remaining})`;
+    const value = card.find(".value").first().text().trim();
+    const remaining = card.find(".remaining").first().text().trim();
+    
+    if (value) {
+      deadlineText = remaining ? `${value} (${remaining})` : value;
+    } else {
+      const pendaftaranBox = card.find(":contains('Pendaftaran')").last();
+      if (pendaftaranBox.length) {
+        deadlineText = pendaftaranBox.text().replace("Pendaftaran", "").replace(/\s+/g, " ").trim();
+      }
     }
 
-    // Cek status apakah kompetisi masih akan datang atau sudah lewat
-    const isPast = deadlineText.toLowerCase().includes("sudah ditutup");
+    const isPast = deadlineText.toLowerCase().includes("sudah ditutup") || deadlineText.toLowerCase().includes("tutup");
 
     competitions.push({
-      id: normalizeId(detailUrl, "puspresnas-sma"),
+      id: normalizeId(detailUrl || title, "puspresnas-sma"),
       title,
-      shortDescription: card.find(".description").text().trim() || `Ajang Talenta Resmi Tingkat Nasional (OSN/OPSI/LDI).`,
-      url: detailUrl,
+      shortDescription: card.find(".description, p").first().text().trim() || `Ajang Talenta Resmi Tingkat Nasional (Puspresnas).`,
+      url: detailUrl || "https://sma-pusatprestasinasional.kemendikdasmen.go.id/",
       source: "Puspresnas SMA",
       deadline: deadlineText,
       category: guessCategory(title),
       tags: ["Puspresnas", "Official", "SMA"],
-      isUpcoming: !isPast, // true jika belum ditutup
+      isUpcoming: !isPast, 
       imageUrl
     });
   });
@@ -313,7 +321,8 @@ app.get('/api/competitions', async (c) => {
 
   try {
     const targets = [
-      fetchHtml("https://sma.pusatprestasinasional.kemdikbud.go.id/").then(h => parsePuspresnasSma(h)), // << DATA RESMI KEDINASAN (OSN, OPSI, LDI)
+      // URL Target Puspresnas Baru 2026 yang menggunakan strip (-)
+      fetchHtml("https://sma-pusatprestasinasional.kemendikdasmen.go.id/").then(h => parsePuspresnasSma(h)), 
       fetchHtml(infolombaUrl).then(h => parseInfoLomba(h, query)),
       fetchHtml("https://kompetisi.co.id/?page=1").then(h => parseKompetisiCoId(h)),
       fetchHtml("https://kompetisi.co.id/?page=2").then(h => parseKompetisiCoId(h)),
@@ -331,7 +340,6 @@ app.get('/api/competitions', async (c) => {
     responses.forEach((res, idx) => {
       if (res.status === "fulfilled") {
         if (idx === 0 || idx === 1) {
-          // Puspresnas SMA dan InfoLomba dimasukkan langsung karena sudah difilter di level parser
           rawCompetitions.push(...res.value);
         } else {
           const items = res.value;
@@ -354,13 +362,11 @@ app.get('/api/competitions', async (c) => {
 
     let filteredResults = Array.from(uniqueMap.values());
 
-    // Filter tambahan berdasarkan Query parameter jika user melakukan pencarian global
     if (query) {
       const lowerQ = query.toLowerCase();
       filteredResults = filteredResults.filter(comp => comp.title.toLowerCase().includes(lowerQ));
     }
 
-    // Filter berdasarkan Kategori
     if (categoryFilter !== "all") {
       filteredResults = filteredResults.filter(comp => comp.category === categoryFilter);
     }
