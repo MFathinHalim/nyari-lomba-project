@@ -15,9 +15,9 @@ app.use('/api/*', cors({
 // HELPERS & CONFIGURATIONS
 // ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi"],
+  Business: ["business", "entrepreneur", "startup", "marketing", "case", "bisnis", "ekonomi", "manajemen", "akuntansi", "fiksi"],
   Arts: ["design", "art", "creative", "illustration", "visual", "film", "festival", "movie", "video", "sinematografi", "foto", "photography", "poster", "lukis", "gambar", "musik", "lagu", "seni", "olahraga", "o2sn", "fls2n"],
-  Science: ["science", "tech", "technology", "research", "innovation", "sains", "matematika", "fisika", "biologi", "kimia", "olimpiade", "riset", "karya tulis", "kti", "osn"],
+  Science: ["science", "tech", "technology", "research", "innovation", "sains", "matematika", "fisika", "biologi", "kimia", "olimpiade", "riset", "karya tulis", "kti", "osn", "opsi"],
   "E-Sports": ["esports", "gaming", "valorant", "mlbb", "mobile legends", "game", "turnamen", "tournament", "pubg"],
   Writing: ["writing", "cerpen", "essay", "story", "literature", "poetry", "menulis", "esai", "puisi", "sastra", "novel"],
   IT: ["hackathon", "software", "developer", "web", "app", "blockchain", "programming", "coding", "ui/ux", "cyber", "data science", "ai", "cloud"],
@@ -61,6 +61,64 @@ async function fetchHtml(url: string): Promise<string> {
 // ─────────────────────────────────────────────────────────────────────────────
 // PARSERS
 // ─────────────────────────────────────────────────────────────────────────────
+function parsePuspresnasSma(html: string): any[] {
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const competitions: any[] = [];
+
+  // 1. Target langsung kontainer .card bawaan Svelte-nya
+  $(".card").each((_, el) => {
+    const card = $(el);
+    
+    // 2. Ambil judul dari tag h2 di dalam card-content
+    const title = card.find(".card-content h2").text().trim();
+    if (!title) return;
+
+    // Filter biar murni dapet ajang resmi talenta aja
+    if (!/osn|opsi|ldi|ldbi|fiksi|nsdc|o2sn|fls2n|olimpiade|debat|talenta/i.test(title)) return;
+
+    // 3. Ambil URL Detail dari tombol "Info Lebih Lanjut"
+    let detailUrl = card.find(".links a").attr("href")?.trim() || "";
+    if (!detailUrl) {
+      // Fallback kalau tombolnya gak ketemu, pakai link apa aja yang ada di card
+      detailUrl = card.find("a").attr("href")?.trim() || "https://sma.pusatprestasinasional.kemdikbud.go.id/";
+    }
+
+    // 4. Ambil Image/Poster src
+    let imageUrl = card.find(".card-image img").attr("src")?.trim() || "";
+
+    // 5. Ekstrak Tanggal Pendaftaran
+    // Mengambil teks dari date-item pertama (Pendaftaran: 16 Feb 2026 - 31 Mar 2026 Sudah ditutup)
+    const pendaftaranEl = card.find(".dates .date-item").first();
+    let deadlineText = "Lihat Portal";
+    if (pendaftaranEl.length) {
+      const label = pendaftaranEl.find(".label").text().trim(); // "Pendaftaran"
+      const value = pendaftaranEl.find(".value").text().trim(); // "16 Feb 2026 - 31 Mar 2026"
+      const remaining = pendaftaranEl.find(".remaining").text().trim(); // "Sudah ditutup"
+      
+      deadlineText = `${value} (${remaining})`;
+    }
+
+    // Cek status apakah kompetisi masih akan datang atau sudah lewat
+    const isPast = deadlineText.toLowerCase().includes("sudah ditutup");
+
+    competitions.push({
+      id: normalizeId(detailUrl, "puspresnas-sma"),
+      title,
+      shortDescription: card.find(".description").text().trim() || `Ajang Talenta Resmi Tingkat Nasional (OSN/OPSI/LDI).`,
+      url: detailUrl,
+      source: "Puspresnas SMA",
+      deadline: deadlineText,
+      category: guessCategory(title),
+      tags: ["Puspresnas", "Official", "SMA"],
+      isUpcoming: !isPast, // true jika belum ditutup
+      imageUrl
+    });
+  });
+
+  return competitions;
+}
+
 function parseInfoLomba(html: string, query: string): any[] {
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -242,7 +300,7 @@ function parseKompetisiOnline(html: string, query: string): any[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ENDPOINT COMPETITIONS (100% CLEAN DARI PUSPRESNAS)
+// MAIN ENDPOINT
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/api/competitions', async (c) => {
   const query = (c.req.query('q') || "").trim();
@@ -255,6 +313,7 @@ app.get('/api/competitions', async (c) => {
 
   try {
     const targets = [
+      fetchHtml("https://sma.pusatprestasinasional.kemdikbud.go.id/").then(h => parsePuspresnasSma(h)), // << DATA RESMI KEDINASAN (OSN, OPSI, LDI)
       fetchHtml(infolombaUrl).then(h => parseInfoLomba(h, query)),
       fetchHtml("https://kompetisi.co.id/?page=1").then(h => parseKompetisiCoId(h)),
       fetchHtml("https://kompetisi.co.id/?page=2").then(h => parseKompetisiCoId(h)),
@@ -271,7 +330,8 @@ app.get('/api/competitions', async (c) => {
 
     responses.forEach((res, idx) => {
       if (res.status === "fulfilled") {
-        if (idx === 0) {
+        if (idx === 0 || idx === 1) {
+          // Puspresnas SMA dan InfoLomba dimasukkan langsung karena sudah difilter di level parser
           rawCompetitions.push(...res.value);
         } else {
           const items = res.value;
@@ -293,16 +353,24 @@ app.get('/api/competitions', async (c) => {
     });
 
     let filteredResults = Array.from(uniqueMap.values());
+
+    // Filter tambahan berdasarkan Query parameter jika user melakukan pencarian global
+    if (query) {
+      const lowerQ = query.toLowerCase();
+      filteredResults = filteredResults.filter(comp => comp.title.toLowerCase().includes(lowerQ));
+    }
+
+    // Filter berdasarkan Kategori
     if (categoryFilter !== "all") {
       filteredResults = filteredResults.filter(comp => comp.category === categoryFilter);
     }
 
-    return c.json(filteredResults.slice(0, 150));
+    return c.json(filteredResults.slice(0, 180));
   } catch (err) {
     return c.json([]);
   }
 })
 
-app.get("/", (c) => c.text("Nantangin Clean API is Running smoothly! 🎉"));
+app.get("/", (c) => c.text("Nantangin Hybrid API (with Puspresnas SMA) is running perfectly! 🚀"));
 
 export default app
